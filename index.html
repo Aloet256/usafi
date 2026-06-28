@@ -470,7 +470,7 @@
 
       return `<div class="expense-peek">
         <span>${cash(totals.approvedExpenses)}</span>
-        <button type="button" class="eye-button" aria-label="View expense details">View</button>
+        <button type="button" class="eye-button" aria-label="View expense details" onclick="toggleExpensePeek(this)">View</button>
         <div class="expense-popover">
           <section>
             <h4>Approved expenses</h4>
@@ -482,6 +482,18 @@
           </section>
         </div>
       </div>`
+    }
+
+    function closeExpensePeeks() {
+      document.querySelectorAll('.expense-peek.open').forEach((peek) => peek.classList.remove('open'))
+    }
+
+    function toggleExpensePeek(button) {
+      const peek = button.closest('.expense-peek')
+      if (!peek) return
+      const shouldOpen = !peek.classList.contains('open')
+      closeExpensePeeks()
+      if (shouldOpen) peek.classList.add('open')
     }
 
     function emptyState(title, detail) {
@@ -835,7 +847,19 @@
         allEntries.forEach((entry) => {
           const key = entry.entry_date.slice(0, 7)
           const totals = totalsFor(entry)
-          const row = byMonth.get(key) || { month: key, entries: 0, sales: 0, payout: 0, approved: 0, unapproved: 0, cashIn: 0, cashOut: 0, variance: 0 }
+          const row = byMonth.get(key) || {
+            month: key,
+            entries: 0,
+            sales: 0,
+            payout: 0,
+            approved: 0,
+            unapproved: 0,
+            cashIn: 0,
+            cashOut: 0,
+            variance: 0,
+            firstEntry: null,
+            lastEntry: null,
+          }
           row.entries += 1
           row.sales += totals.totalSales
           row.payout += totals.totalPayout
@@ -844,6 +868,8 @@
           row.cashIn += money(entry.cash_in)
           row.cashOut += money(entry.cash_out)
           row.variance += totals.variance
+          if (!row.firstEntry || entry.entry_date < row.firstEntry.entry_date) row.firstEntry = entry
+          if (!row.lastEntry || entry.entry_date > row.lastEntry.entry_date) row.lastEntry = entry
           byMonth.set(key, row)
         })
         const rows = Array.from(byMonth.values()).sort((a, b) => b.month.localeCompare(a.month))
@@ -851,12 +877,14 @@
           <article class="month-card">
             <header><span>${monthName(`${row.month}-01`)}</span><strong>${row.entries} days</strong></header>
             <dl>
+              <div><dt>Opening balance</dt><dd>${cash(row.firstEntry?.opening_balance || 0)}</dd></div>
               <div><dt>Sales</dt><dd>${cash(row.sales)}</dd></div>
               <div><dt>Payout</dt><dd>${cash(row.payout)}</dd></div>
               <div><dt>Approved</dt><dd>${cash(row.approved)}</dd></div>
               <div><dt>Unapproved</dt><dd>${cash(row.unapproved)}</dd></div>
               <div><dt>Cash in</dt><dd>${cash(row.cashIn)}</dd></div>
               <div><dt>Cash out</dt><dd>${cash(row.cashOut)}</dd></div>
+              <div><dt>Closing balance</dt><dd>${cash(row.lastEntry ? totalsFor(row.lastEntry).expectedClosing : 0)}</dd></div>
               <div class="${Math.abs(row.variance) < 1 ? 'ok-text' : 'danger-text'}"><dt>Variance</dt><dd>${cash(row.variance)}</dd></div>
             </dl>
           </article>
@@ -1205,6 +1233,7 @@
     window.viewEntry = viewEntry
     window.editEntry = editEntry
     window.deleteEntry = deleteEntry
+    window.toggleExpensePeek = toggleExpensePeek
     window.importWorkbookRows = importWorkbookRows
     window.exportEntries = exportEntries
     window.exportPdf = exportPdf
@@ -1227,6 +1256,9 @@
       document.body.addEventListener('input', (event) => {
         if (event.target.matches('.amount-input')) formatAmountInput(event.target)
         if (event.target.closest('#entry_form')) calculatePreview()
+      })
+      document.body.addEventListener('click', (event) => {
+        if (!event.target.closest('.expense-peek')) closeExpensePeeks()
       })
       $('app_shell').hidden = false
       $('workspace').hidden = false
@@ -1557,8 +1589,8 @@
       box-shadow: var(--shadow);
     }
 
-    .expense-peek:hover .expense-popover,
-    .expense-peek:focus-within .expense-popover {
+    .expense-peek.open .expense-popover,
+    .expense-peek:hover .expense-popover {
       display: grid;
       gap: 12px;
     }
