@@ -1403,37 +1403,42 @@
     }
 
     .month-divider-content {
-      display: grid;
+      display: flex;
       justify-content: center;
       align-items: center;
-      gap: 8px;
-      min-height: 64px;
-      padding: 10px 18px 12px;
+      gap: 14px;
+      min-height: 46px;
+      padding: 8px 14px;
       background: var(--brand-red);
       color: #fff;
+      white-space: nowrap;
+      overflow-x: auto;
+      scrollbar-width: none;
     }
 
     .month-title-line {
       display: flex;
       justify-content: center;
       align-items: center;
-      gap: 18px;
+      gap: 10px;
+      flex: 0 0 auto;
     }
 
     .month-breakdown {
       display: flex;
       justify-content: center;
       align-items: center;
-      gap: 18px;
-      flex-wrap: wrap;
+      gap: 12px;
+      flex: 0 0 auto;
+      flex-wrap: nowrap;
       color: rgba(255,255,255,0.88);
-      font-size: 12px;
+      font-size: 10px;
       font-weight: 850;
     }
 
     .month-breakdown strong {
       color: #fff;
-      font-size: 12px;
+      font-size: 10px;
     }
 
     .month-divider strong {
@@ -2446,19 +2451,19 @@
       }
 
       .month-divider-content {
-        display: grid;
-        gap: 3px;
-        min-height: 86px;
+        justify-content: flex-start;
+        gap: 10px;
+        min-height: 46px;
       }
 
       .month-title-line,
       .month-breakdown {
-        display: grid;
-        gap: 4px;
+        display: flex;
+        gap: 8px;
       }
 
       .month-breakdown {
-        font-size: 11px;
+        font-size: 10px;
       }
 
       .expense-popover {
