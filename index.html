@@ -45,6 +45,9 @@
     let isBackgroundSyncing = false
     let activeSaveCount = 0
     let autoRefreshTimer = null
+    const pendingEntries = new Map()
+    const pendingExpenses = new Map()
+    const pendingDeletedIds = new Set()
     let recordsMonthFilter = ''
     let currentPage = 'dashboard'
     const appPages = new Set(['dashboard', 'entry', 'import', 'entries', 'reports'])
@@ -265,11 +268,36 @@
 
       const ids = (entries || []).map((entry) => entry.id)
       const expenses = ids.length ? await fetchExpensesForEntries(ids) : []
-      allEntries = entries || []
-      allExpenses = expenses
+      const ledger = applyPendingLedgerState(entries || [], expenses)
+      allEntries = ledger.entries
+      allExpenses = ledger.expenses
       hasFetchedEntries = true
       saveLocalCache()
       return allEntries
+    }
+
+    function applyPendingLedgerState(entries, expenses) {
+      let nextEntries = entries.filter((entry) => !pendingDeletedIds.has(entry.id))
+      let nextExpenses = expenses.filter((expense) => !pendingDeletedIds.has(expense.daily_balance_entry_id))
+
+      pendingEntries.forEach((entry, id) => {
+        nextEntries = [
+          entry,
+          ...nextEntries.filter((row) => row.id !== id),
+        ]
+      })
+
+      pendingExpenses.forEach((items, id) => {
+        nextExpenses = [
+          ...nextExpenses.filter((expense) => expense.daily_balance_entry_id !== id),
+          ...items,
+        ]
+      })
+
+      return {
+        entries: nextEntries.sort((a, b) => b.entry_date.localeCompare(a.entry_date)),
+        expenses: nextExpenses,
+      }
     }
 
     function saveLocalCache() {
@@ -633,8 +661,9 @@
       }
       const previousEntries = [...allEntries]
       const previousExpenses = [...allExpenses]
-      const existingEntry = editId ? allEntries.find((row) => row.id === editId) : null
-      const optimisticId = editId || `local-${Date.now()}-${Math.random().toString(16).slice(2)}`
+      const matchingEntry = allEntries.find((row) => row.location === entry.location && row.entry_date === entry.entry_date)
+      const existingEntry = editId ? allEntries.find((row) => row.id === editId) : matchingEntry
+      const optimisticId = editId || existingEntry?.id || `local-${Date.now()}-${Math.random().toString(16).slice(2)}`
       const optimisticEntry = {
         ...(existingEntry || {}),
         ...entry,
@@ -650,6 +679,8 @@
       const saveButton = $('entry_submit_btn')
       const previousButtonText = saveButton.textContent
 
+      pendingEntries.set(optimisticId, optimisticEntry)
+      pendingExpenses.set(optimisticId, optimisticExpenses)
       cacheEntry(optimisticEntry, optimisticExpenses)
       showToast(wasEditing ? 'Updating entry...' : 'Saving entry...', 'success')
       clearEntryForm()
@@ -681,11 +712,15 @@
           allEntries = allEntries.filter((row) => row.id !== optimisticId)
           allExpenses = allExpenses.filter((expense) => expense.daily_balance_entry_id !== optimisticId)
         }
+        pendingEntries.delete(optimisticId)
+        pendingExpenses.delete(optimisticId)
         cacheEntry(data, savedExpenses)
         await fetchEntries()
         refreshLocalViews()
         showToast('All data successfully submitted.', 'success')
       } catch (error) {
+        pendingEntries.delete(optimisticId)
+        pendingExpenses.delete(optimisticId)
         allEntries = previousEntries
         allExpenses = previousExpenses
         saveLocalCache()
@@ -889,12 +924,16 @@
       const previousEntries = [...allEntries]
       const previousExpenses = [...allExpenses]
       activeSaveCount += 1
+      pendingEntries.delete(id)
+      pendingExpenses.delete(id)
+      pendingDeletedIds.add(id)
       removeCachedEntry(id)
       try {
         const { error } = await supabase.from('daily_balance_entries').delete().eq('id', id)
         if (error) throw error
         showToast('Entry deleted.', 'success')
       } catch (error) {
+        pendingDeletedIds.delete(id)
         allEntries = previousEntries
         allExpenses = previousExpenses
         saveLocalCache()
