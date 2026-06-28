@@ -2451,19 +2451,33 @@
       }
 
       .month-divider-content {
-        justify-content: flex-start;
-        gap: 10px;
-        min-height: 46px;
+        display: grid;
+        justify-content: center;
+        gap: 5px;
+        min-height: auto;
+        padding: 10px 8px;
+        white-space: normal;
+        overflow: visible;
       }
 
       .month-title-line,
       .month-breakdown {
-        display: flex;
-        gap: 8px;
+        display: grid;
+        justify-content: center;
+        gap: 3px;
+        text-align: center;
       }
 
       .month-breakdown {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
         font-size: 10px;
+      }
+
+      .month-breakdown span {
+        padding: 4px 5px;
+        border-radius: 8px;
+        background: rgba(255,255,255,0.12);
+        white-space: normal;
       }
 
       .expense-popover {
