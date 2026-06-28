@@ -715,8 +715,6 @@
         pendingEntries.delete(optimisticId)
         pendingExpenses.delete(optimisticId)
         cacheEntry(data, savedExpenses)
-        await fetchEntries()
-        refreshLocalViews()
         showToast('All data successfully submitted.', 'success')
       } catch (error) {
         pendingEntries.delete(optimisticId)
