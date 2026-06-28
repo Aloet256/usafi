@@ -27,6 +27,7 @@
     const today = () => new Date().toISOString().slice(0, 10)
     const monthName = (date) => new Date(`${date}T00:00:00`).toLocaleDateString('en-UG', { month: 'short', year: 'numeric' })
     const displayDate = (date) => new Date(`${date}T00:00:00`).toLocaleDateString('en-GB')
+    const cacheKey = 'usafi-ledger-cache-v1'
 
     const monthMap = {
       jan: 0, january: 0, feb: 1, february: 1, mar: 2, march: 2, apr: 3, april: 3,
@@ -221,7 +222,36 @@
       allEntries = entries || []
       allExpenses = expenses
       hasFetchedEntries = true
+      saveLocalCache()
       return allEntries
+    }
+
+    function saveLocalCache() {
+      try {
+        localStorage.setItem(cacheKey, JSON.stringify({
+          entries: allEntries,
+          expenses: allExpenses,
+          savedAt: Date.now(),
+        }))
+      } catch (error) {
+        console.warn('Local cache save failed', error)
+      }
+    }
+
+    function hydrateLocalCache() {
+      try {
+        const cached = JSON.parse(localStorage.getItem(cacheKey) || 'null')
+        if (!cached || !Array.isArray(cached.entries) || !Array.isArray(cached.expenses)) return false
+        allEntries = cached.entries
+        allExpenses = cached.expenses
+        expenseCatalog = buildExpenseCatalog(allExpenses.map((expense) => expense.item).filter(Boolean))
+        refreshExpenseSuggestions()
+        hasFetchedEntries = true
+        return true
+      } catch (error) {
+        console.warn('Local cache read failed', error)
+        return false
+      }
     }
 
     async function syncEntriesInBackground() {
@@ -646,6 +676,8 @@
       ]
       expenseCatalog = buildExpenseCatalog(allExpenses.map((expense) => expense.item).filter(Boolean))
       refreshExpenseSuggestions()
+      hasFetchedEntries = true
+      saveLocalCache()
       refreshLocalViews()
     }
 
@@ -654,6 +686,7 @@
       allExpenses = allExpenses.filter((expense) => expense.daily_balance_entry_id !== id)
       expenseCatalog = buildExpenseCatalog(allExpenses.map((expense) => expense.item).filter(Boolean))
       refreshExpenseSuggestions()
+      saveLocalCache()
       refreshLocalViews()
     }
 
@@ -1133,13 +1166,10 @@
       })
       $('app_shell').hidden = false
       $('workspace').hidden = false
-      try {
-        await loadExpenseCatalog()
-      } catch (error) {
-        showToast(`Expense list failed to load: ${error.message}`, 'error')
-      }
+      hydrateLocalCache()
       addExpenseRow('approved')
-      showPage('dashboard')
+      showPage('dashboard', hasFetchedEntries)
+      loadExpenseCatalog().catch((error) => showToast(`Expense list failed to load: ${error.message}`, 'error'))
     })
   </script>
   <style>
