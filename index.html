@@ -43,6 +43,9 @@
     let importRows = []
     let hasFetchedEntries = false
     let isBackgroundSyncing = false
+    let realtimeRefreshTimer = null
+    let activeSaveCount = 0
+    let ledgerRealtimeChannel = null
     let recordsMonthFilter = ''
     let currentPage = 'dashboard'
     const appPages = new Set(['dashboard', 'entry', 'import', 'entries', 'reports'])
@@ -301,6 +304,33 @@
       } finally {
         isBackgroundSyncing = false
       }
+    }
+
+    function scheduleRealtimeRefresh() {
+      window.clearTimeout(realtimeRefreshTimer)
+      realtimeRefreshTimer = window.setTimeout(async () => {
+        if (activeSaveCount > 0) {
+          scheduleRealtimeRefresh()
+          return
+        }
+        try {
+          await fetchEntries()
+          refreshLocalViews()
+        } catch (error) {
+          console.warn('Realtime refresh failed', error)
+        }
+      }, 700)
+    }
+
+    function startRealtimeSync() {
+      if (ledgerRealtimeChannel) return
+      ledgerRealtimeChannel = supabase
+        .channel('usafi-ledger-live')
+        .on('postgres_changes', { event: '*', schema: 'public', table: 'daily_balance_entries' }, scheduleRealtimeRefresh)
+        .on('postgres_changes', { event: '*', schema: 'public', table: 'daily_balance_expenses' }, scheduleRealtimeRefresh)
+        .subscribe((status) => {
+          if (status === 'CHANNEL_ERROR') console.warn('Realtime channel failed to connect')
+        })
     }
 
     async function loadExpenseCatalog() {
@@ -638,6 +668,7 @@
       clearEntryForm()
       showPage('entries', true)
 
+      activeSaveCount += 1
       try {
         const query = editId
           ? supabase.from('daily_balance_entries').update(entry).eq('id', editId).select('*').single()
@@ -665,6 +696,7 @@
         }
         cacheEntry(data, savedExpenses)
         showToast(wasEditing ? 'Entry updated.' : 'Entry saved.', 'success')
+        window.alert('All Data successfully submitted')
       } catch (error) {
         allEntries = previousEntries
         allExpenses = previousExpenses
@@ -672,6 +704,8 @@
         refreshLocalViews()
         saveButton.textContent = previousButtonText
         showToast(error.message, 'error')
+      } finally {
+        activeSaveCount = Math.max(0, activeSaveCount - 1)
       }
     }
 
@@ -1300,6 +1334,7 @@
       $('app_shell').hidden = false
       $('workspace').hidden = false
       hydrateLocalCache()
+      startRealtimeSync()
       addExpenseRow('approved')
       if (initialPage === 'dashboard') {
         showPage('dashboard', hasFetchedEntries, true)

@@ -271,3 +271,29 @@ GRANT SELECT, INSERT, UPDATE, DELETE ON public.daily_balance_entries TO authenti
 GRANT SELECT, INSERT, UPDATE, DELETE ON public.daily_balance_expenses TO authenticated;
 GRANT SELECT ON public.daily_balance_summary TO authenticated;
 GRANT SELECT ON public.monthly_balance_summary TO authenticated;
+
+DO $$
+BEGIN
+  IF EXISTS (SELECT 1 FROM pg_publication WHERE pubname = 'supabase_realtime') THEN
+    IF NOT EXISTS (
+      SELECT 1
+      FROM pg_publication_tables
+      WHERE pubname = 'supabase_realtime'
+        AND schemaname = 'public'
+        AND tablename = 'daily_balance_entries'
+    ) THEN
+      ALTER PUBLICATION supabase_realtime ADD TABLE public.daily_balance_entries;
+    END IF;
+
+    IF NOT EXISTS (
+      SELECT 1
+      FROM pg_publication_tables
+      WHERE pubname = 'supabase_realtime'
+        AND schemaname = 'public'
+        AND tablename = 'daily_balance_expenses'
+    ) THEN
+      ALTER PUBLICATION supabase_realtime ADD TABLE public.daily_balance_expenses;
+    END IF;
+  END IF;
+END;
+$$;
