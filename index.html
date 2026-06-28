@@ -598,6 +598,8 @@
 
     async function saveEntry(event) {
       event.preventDefault()
+      const editId = editingId
+      const wasEditing = Boolean(editId)
       const entry = {
         location: $('location').value.trim() || 'USAFI',
         entry_date: $('entry_date').value,
@@ -612,28 +614,63 @@
         shortage_explanation: $('shortage_explanation').value.trim(),
         status: $('status').value,
       }
+      const previousEntries = [...allEntries]
+      const previousExpenses = [...allExpenses]
+      const existingEntry = editId ? allEntries.find((row) => row.id === editId) : null
+      const optimisticId = editId || `local-${Date.now()}-${Math.random().toString(16).slice(2)}`
+      const optimisticEntry = {
+        ...(existingEntry || {}),
+        ...entry,
+        id: optimisticId,
+        created_at: existingEntry?.created_at || new Date().toISOString(),
+        updated_at: new Date().toISOString(),
+      }
+      const optimisticExpenses = collectFormExpenses(optimisticId).map((expense, index) => ({
+        ...expense,
+        id: `local-expense-${optimisticId}-${index}`,
+        created_at: new Date().toISOString(),
+      }))
+      const saveButton = $('entry_submit_btn')
+      const previousButtonText = saveButton.textContent
+
+      cacheEntry(optimisticEntry, optimisticExpenses)
+      showToast(wasEditing ? 'Updating entry...' : 'Saving entry...', 'success')
+      clearEntryForm()
+      showPage('entries', true)
 
       try {
-        const query = editingId
-          ? supabase.from('daily_balance_entries').update(entry).eq('id', editingId).select('*').single()
+        const query = editId
+          ? supabase.from('daily_balance_entries').update(entry).eq('id', editId).select('*').single()
           : supabase.from('daily_balance_entries').upsert(entry, { onConflict: 'location,entry_date' }).select('*').single()
         const { data, error } = await query
         if (error) throw error
 
         const { error: deleteError } = await supabase.from('daily_balance_expenses').delete().eq('daily_balance_entry_id', data.id)
         if (deleteError) throw deleteError
-        const expenses = collectFormExpenses(data.id)
+        const expenses = optimisticExpenses.map((expense) => ({
+          daily_balance_entry_id: data.id,
+          expense_status: expense.expense_status,
+          item: expense.item,
+          amount: expense.amount,
+        }))
         let savedExpenses = []
         if (expenses.length) {
           const { data: expenseData, error: expenseError } = await supabase.from('daily_balance_expenses').insert(expenses).select('*')
           if (expenseError) throw expenseError
           savedExpenses = expenseData || expenses
         }
+        if (optimisticId !== data.id) {
+          allEntries = allEntries.filter((row) => row.id !== optimisticId)
+          allExpenses = allExpenses.filter((expense) => expense.daily_balance_entry_id !== optimisticId)
+        }
         cacheEntry(data, savedExpenses)
-        showToast(editingId ? 'Entry updated.' : 'Entry saved.', 'success')
-        clearEntryForm()
-        showPage('entries', true)
+        showToast(wasEditing ? 'Entry updated.' : 'Entry saved.', 'success')
       } catch (error) {
+        allEntries = previousEntries
+        allExpenses = previousExpenses
+        saveLocalCache()
+        refreshLocalViews()
+        saveButton.textContent = previousButtonText
         showToast(error.message, 'error')
       }
     }
