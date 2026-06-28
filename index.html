@@ -659,32 +659,11 @@
         shortage_explanation: $('shortage_explanation').value.trim(),
         status: $('status').value,
       }
-      const previousEntries = [...allEntries]
-      const previousExpenses = [...allExpenses]
-      const matchingEntry = allEntries.find((row) => row.location === entry.location && row.entry_date === entry.entry_date)
-      const existingEntry = editId ? allEntries.find((row) => row.id === editId) : matchingEntry
-      const optimisticId = editId || existingEntry?.id || `local-${Date.now()}-${Math.random().toString(16).slice(2)}`
-      const optimisticEntry = {
-        ...(existingEntry || {}),
-        ...entry,
-        id: optimisticId,
-        created_at: existingEntry?.created_at || new Date().toISOString(),
-        updated_at: new Date().toISOString(),
-      }
-      const optimisticExpenses = collectFormExpenses(optimisticId).map((expense, index) => ({
-        ...expense,
-        id: `local-expense-${optimisticId}-${index}`,
-        created_at: new Date().toISOString(),
-      }))
       const saveButton = $('entry_submit_btn')
       const previousButtonText = saveButton.textContent
-
-      pendingEntries.set(optimisticId, optimisticEntry)
-      pendingExpenses.set(optimisticId, optimisticExpenses)
-      cacheEntry(optimisticEntry, optimisticExpenses)
       showToast(wasEditing ? 'Updating entry...' : 'Saving entry...', 'success')
-      clearEntryForm()
-      showPage('entries', true)
+      saveButton.disabled = true
+      saveButton.textContent = wasEditing ? 'Updating...' : 'Saving...'
 
       activeSaveCount += 1
       try {
@@ -696,7 +675,7 @@
 
         const { error: deleteError } = await supabase.from('daily_balance_expenses').delete().eq('daily_balance_entry_id', data.id)
         if (deleteError) throw deleteError
-        const expenses = optimisticExpenses.map((expense) => ({
+        const expenses = collectFormExpenses(data.id).map((expense) => ({
           daily_balance_entry_id: data.id,
           expense_status: expense.expense_status,
           item: expense.item,
@@ -708,24 +687,15 @@
           if (expenseError) throw expenseError
           savedExpenses = expenseData || expenses
         }
-        if (optimisticId !== data.id) {
-          allEntries = allEntries.filter((row) => row.id !== optimisticId)
-          allExpenses = allExpenses.filter((expense) => expense.daily_balance_entry_id !== optimisticId)
-        }
-        pendingEntries.delete(optimisticId)
-        pendingExpenses.delete(optimisticId)
         cacheEntry(data, savedExpenses)
+        clearEntryForm()
+        showPage('entries', true)
         showToast('All data successfully submitted.', 'success')
       } catch (error) {
-        pendingEntries.delete(optimisticId)
-        pendingExpenses.delete(optimisticId)
-        allEntries = previousEntries
-        allExpenses = previousExpenses
-        saveLocalCache()
-        refreshLocalViews()
-        saveButton.textContent = previousButtonText
         showToast(readableSaveError(error), 'error')
       } finally {
+        saveButton.disabled = false
+        saveButton.textContent = previousButtonText
         activeSaveCount = Math.max(0, activeSaveCount - 1)
       }
     }
