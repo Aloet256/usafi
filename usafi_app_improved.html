@@ -684,8 +684,7 @@
         cacheEntry(data, savedExpenses)
         await fetchEntries()
         refreshLocalViews()
-        showToast(wasEditing ? 'Entry updated.' : 'Entry saved.', 'success')
-        window.alert('All Data successfully submitted')
+        showToast('All data successfully submitted.', 'success')
       } catch (error) {
         allEntries = previousEntries
         allExpenses = previousExpenses
