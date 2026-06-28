@@ -716,7 +716,9 @@
       const filteredEntries = recordsMonthFilter
         ? allEntries.filter((entry) => entry.entry_date?.startsWith(recordsMonthFilter))
         : allEntries
-      $('entries_body').innerHTML = filteredEntries.length ? groupedEntryRows(filteredEntries) : emptyState('No entries found', 'Choose another month or clear the month filter.')
+      $('entries_body').innerHTML = filteredEntries.length
+        ? groupedEntryRows(filteredEntries)
+        : '<div class="empty records-empty"><strong>No entries found</strong><span>Choose another month or clear the month filter.</span></div>'
     }
 
     function renderRecordsMonthPicker() {
@@ -755,8 +757,8 @@
             return acc
           }, { sales: 0, normalSales: 0, virtualSales: 0, payout: 0, normalPayout: 0, virtualPayout: 0 })
           return `
-            <tr class="month-divider">
-              <td colspan="10">
+            <article class="month-record-panel">
+              <header class="month-record-header">
                 <div class="month-divider-content">
                   <div class="month-title-line">
                     <strong>${month === 'Unknown' ? 'Unknown month' : monthName(`${month}-01`)}</strong>
@@ -769,21 +771,29 @@
                     <span>Virtual payout: <strong>${cash(monthTotals.virtualPayout)}</strong></span>
                   </div>
                 </div>
-              </td>
-            </tr>
-            <tr class="month-column-header">
-              <th>Date</th>
-              <th>Opening</th>
-              <th>Total sales</th>
-              <th>Total payout</th>
-              <th>Cash in/out</th>
-              <th>Expenses</th>
-              <th>Closing</th>
-              <th>Cash at hand</th>
-              <th>Status</th>
-              <th>Actions</th>
-            </tr>
-            ${rows.map(entryRow).join('')}
+              </header>
+              <div class="table-wrap month-record-table-wrap">
+                <table class="records-table month-record-table">
+                  <thead>
+                    <tr>
+                      <th>Date</th>
+                      <th>Opening</th>
+                      <th>Total sales</th>
+                      <th>Total payout</th>
+                      <th>Cash in/out</th>
+                      <th>Expenses</th>
+                      <th>Closing</th>
+                      <th>Cash at hand</th>
+                      <th>Status</th>
+                      <th>Actions</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    ${rows.map(entryRow).join('')}
+                  </tbody>
+                </table>
+              </div>
+            </article>
           `
         }).join('')
     }
@@ -3041,6 +3051,77 @@
         border-bottom-color: rgba(240, 180, 41, 0.1);
       }
     }
+
+    .month-records-stack {
+      display: grid;
+      gap: 22px;
+      padding: 16px;
+    }
+
+    .month-record-panel {
+      overflow: hidden;
+      border: 1px solid rgba(240, 180, 41, 0.14);
+      border-radius: 18px;
+      background:
+        linear-gradient(180deg, rgba(37, 46, 59, 0.94), rgba(24, 30, 39, 0.96)),
+        var(--pro-surface);
+      box-shadow: 0 18px 42px rgba(0, 0, 0, 0.26);
+    }
+
+    .month-record-header {
+      background:
+        linear-gradient(135deg, rgba(201, 21, 43, 0.98), rgba(135, 15, 30, 0.98)),
+        var(--pro-red);
+      border-bottom: 1px solid rgba(240, 180, 41, 0.2);
+    }
+
+    .month-record-header .month-divider-content {
+      border-radius: 0;
+      min-height: 64px;
+    }
+
+    .month-record-table-wrap {
+      border-radius: 0;
+      border: 0;
+      background: transparent;
+    }
+
+    .month-record-table {
+      min-width: 1180px;
+    }
+
+    .month-record-table th:first-child,
+    .month-record-table td:first-child {
+      padding-left: 18px;
+    }
+
+    .month-record-table th:last-child,
+    .month-record-table td:last-child {
+      padding-right: 18px;
+    }
+
+    .records-empty {
+      margin: 16px;
+    }
+
+    @media (max-width: 760px) {
+      .month-records-stack {
+        gap: 16px;
+        padding: 12px;
+      }
+
+      .month-record-panel {
+        border-radius: 16px;
+      }
+
+      .month-record-table {
+        min-width: 0;
+      }
+
+      .month-record-header .month-divider-content {
+        padding: 12px 10px;
+      }
+    }
   </style>
 </head>
 <body>
@@ -3192,11 +3273,7 @@
         </div>
       </div>
       <section class="tool-surface">
-        <div class="table-wrap">
-          <table class="records-table">
-            <tbody id="entries_body"></tbody>
-          </table>
-        </div>
+        <div id="entries_body" class="month-records-stack"></div>
       </section>
     </section>
 
