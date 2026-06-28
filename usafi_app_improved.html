@@ -886,10 +886,23 @@
         return
       }
       if (!window.confirm('Delete this entry and its expenses?')) return
-      const { error } = await supabase.from('daily_balance_entries').delete().eq('id', id)
-      if (error) return showToast(error.message, 'error')
+      const previousEntries = [...allEntries]
+      const previousExpenses = [...allExpenses]
+      activeSaveCount += 1
       removeCachedEntry(id)
-      showToast('Entry deleted.', 'success')
+      try {
+        const { error } = await supabase.from('daily_balance_entries').delete().eq('id', id)
+        if (error) throw error
+        showToast('Entry deleted.', 'success')
+      } catch (error) {
+        allEntries = previousEntries
+        allExpenses = previousExpenses
+        saveLocalCache()
+        refreshLocalViews()
+        showToast(error.message, 'error')
+      } finally {
+        activeSaveCount = Math.max(0, activeSaveCount - 1)
+      }
     }
 
     async function loadReports() {
