@@ -632,13 +632,30 @@
       return Array.from(byMonth.entries())
         .sort(([a], [b]) => b.localeCompare(a))
         .map(([month, rows]) => {
-          const total = rows.reduce((sum, entry) => sum + totalsFor(entry).totalSales, 0)
+          const monthTotals = rows.reduce((acc, entry) => {
+            const totals = totalsFor(entry)
+            acc.sales += totals.totalSales
+            acc.normalSales += money(entry.normal_sales)
+            acc.virtualSales += money(entry.virtual_sales)
+            acc.payout += totals.totalPayout
+            acc.normalPayout += money(entry.normal_payout)
+            acc.virtualPayout += money(entry.virtual_payout)
+            return acc
+          }, { sales: 0, normalSales: 0, virtualSales: 0, payout: 0, normalPayout: 0, virtualPayout: 0 })
           return `
             <tr class="month-divider">
               <td colspan="10">
                 <div class="month-divider-content">
-                  <strong>${month === 'Unknown' ? 'Unknown month' : monthName(`${month}-01`)}</strong>
-                  <span>${rows.length} ${rows.length === 1 ? 'entry' : 'entries'} / ${cash(total)} sales</span>
+                  <div class="month-title-line">
+                    <strong>${month === 'Unknown' ? 'Unknown month' : monthName(`${month}-01`)}</strong>
+                    <span>${rows.length} ${rows.length === 1 ? 'entry' : 'entries'} / ${cash(monthTotals.sales)} sales</span>
+                  </div>
+                  <div class="month-breakdown">
+                    <span>Normal sales: <strong>${cash(monthTotals.normalSales)}</strong></span>
+                    <span>Virtual sales: <strong>${cash(monthTotals.virtualSales)}</strong></span>
+                    <span>Normal payout: <strong>${cash(monthTotals.normalPayout)}</strong></span>
+                    <span>Virtual payout: <strong>${cash(monthTotals.virtualPayout)}</strong></span>
+                  </div>
                 </div>
               </td>
             </tr>
@@ -1386,14 +1403,37 @@
     }
 
     .month-divider-content {
+      display: grid;
+      justify-content: center;
+      align-items: center;
+      gap: 8px;
+      min-height: 64px;
+      padding: 10px 18px 12px;
+      background: var(--brand-red);
+      color: #fff;
+    }
+
+    .month-title-line {
       display: flex;
       justify-content: center;
       align-items: center;
       gap: 18px;
-      min-height: 48px;
-      padding: 10px 18px;
-      background: var(--brand-red);
+    }
+
+    .month-breakdown {
+      display: flex;
+      justify-content: center;
+      align-items: center;
+      gap: 18px;
+      flex-wrap: wrap;
+      color: rgba(255,255,255,0.88);
+      font-size: 12px;
+      font-weight: 850;
+    }
+
+    .month-breakdown strong {
       color: #fff;
+      font-size: 12px;
     }
 
     .month-divider strong {
@@ -2408,7 +2448,17 @@
       .month-divider-content {
         display: grid;
         gap: 3px;
-        min-height: 54px;
+        min-height: 86px;
+      }
+
+      .month-title-line,
+      .month-breakdown {
+        display: grid;
+        gap: 4px;
+      }
+
+      .month-breakdown {
+        font-size: 11px;
       }
 
       .expense-popover {
