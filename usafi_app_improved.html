@@ -61,6 +61,14 @@
       window.setTimeout(() => toast.remove(), 5200)
     }
 
+    function readableSaveError(error) {
+      const message = error?.message || String(error || '')
+      if (message.includes('daily_balance_entries_cash_at_hand_check')) {
+        return 'The database has an old Cash at Hand rule blocking this entry. Run the latest Supabase schema once, then save again.'
+      }
+      return message
+    }
+
     function pageUrl(page) {
       return page === 'dashboard'
         ? `${window.location.pathname}${window.location.search}`
@@ -381,7 +389,7 @@
         await fetchEntries()
         renderDashboardFromCache()
       } catch (error) {
-        showToast(error.message, 'error')
+        showToast(readableSaveError(error), 'error')
       }
     }
 
@@ -684,7 +692,7 @@
         saveLocalCache()
         refreshLocalViews()
         saveButton.textContent = previousButtonText
-        showToast(error.message, 'error')
+        showToast(readableSaveError(error), 'error')
       } finally {
         activeSaveCount = Math.max(0, activeSaveCount - 1)
       }
