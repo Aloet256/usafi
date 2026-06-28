@@ -1,0 +1,2577 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Capitalbet USAFI Desk</title>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/html2pdf.js/0.10.1/html2pdf.bundle.min.js"></script>
+  <script type="module">
+    import { createClient } from 'https://esm.sh/@supabase/supabase-js@2'
+
+    const SUPABASE_URL = 'https://rslhojrdkhpblkxickfv.supabase.co'
+    const SUPABASE_PUBLISHABLE_KEY = 'sb_publishable_yfcNVQZKRc7uc8C3b8s7-g_YxFLR1us'
+    const supabase = createClient(SUPABASE_URL, SUPABASE_PUBLISHABLE_KEY)
+
+    const $ = (id) => document.getElementById(id)
+    const $$ = (selector) => Array.from(document.querySelectorAll(selector))
+    const money = (value) => {
+      if (typeof value === 'number') return Number.isFinite(value) ? value : 0
+      const parsed = Number(String(value || '').replace(/,/g, '').trim())
+      return Number.isFinite(parsed) ? parsed : 0
+    }
+    const fromInput = (id) => money($(id).value)
+    const fmt = (value) => money(value).toLocaleString('en-UG', { maximumFractionDigits: 0 })
+    const cash = (value) => `UGX ${fmt(value)}`
+    const inputAmount = (value) => money(value).toLocaleString('en-UG', { maximumFractionDigits: 0 })
+    const today = () => new Date().toISOString().slice(0, 10)
+    const monthName = (date) => new Date(`${date}T00:00:00`).toLocaleDateString('en-UG', { month: 'short', year: 'numeric' })
+    const displayDate = (date) => new Date(`${date}T00:00:00`).toLocaleDateString('en-GB')
+
+    const monthMap = {
+      jan: 0, january: 0, feb: 1, february: 1, mar: 2, march: 2, apr: 3, april: 3,
+      may: 4, jun: 5, june: 5, jul: 6, july: 6, aug: 7, august: 7, ausgust: 7,
+      sep: 8, sept: 8, september: 8, oct: 9, october: 9, nov: 10, november: 10,
+      dec: 11, december: 11,
+    }
+
+    let allEntries = []
+    let allExpenses = []
+    let expenseCatalog = []
+    let editingId = null
+    let importRows = []
+    let hasFetchedEntries = false
+    let isBackgroundSyncing = false
+    let recordsMonthFilter = ''
+    const manualUnlocks = {
+      openingBalance: false,
+      cashAtHand: false,
+    }
+
+    function showToast(message, type = 'info') {
+      const toast = document.createElement('div')
+      toast.className = `toast ${type}`
+      toast.textContent = message
+      $('toasts').appendChild(toast)
+      window.setTimeout(() => toast.remove(), 5200)
+    }
+
+    function showPage(page, useCache = false) {
+      $$('.page').forEach((section) => section.classList.remove('active'))
+      $(`page_${page}`).classList.add('active')
+      $$('.nav-button').forEach((button) => button.classList.toggle('active', button.dataset.page === page))
+      if (page === 'dashboard') (useCache || hasFetchedEntries) ? (renderDashboardFromCache(), syncEntriesInBackground()) : loadDashboard()
+      if (page === 'entries') (useCache || hasFetchedEntries) ? (renderEntriesFromCache(), syncEntriesInBackground()) : loadEntries()
+      if (page === 'reports') (useCache || hasFetchedEntries) ? (renderReportsFromCache(), syncEntriesInBackground()) : loadReports()
+      if (page === 'entry' && !editingId) setEntryDefaults()
+    }
+
+    function formatAmountInput(input) {
+      const raw = String(input.value || '').replace(/[^\d]/g, '')
+      input.value = raw ? Number(raw).toLocaleString('en-UG', { maximumFractionDigits: 0 }) : ''
+    }
+
+    function openImportDesk() {
+      const password = window.prompt('Enter import password')
+      if (password === null) return
+      if (password !== 'wendy456') {
+        showToast('Wrong password. Import desk is locked.', 'error')
+        return
+      }
+      showPage('import')
+    }
+
+    async function insertOpeningBalance() {
+      if (allEntries.length) {
+        showToast('Opening balance is already set from existing records.', 'error')
+        return
+      }
+
+      const password = window.prompt('Enter password to insert opening balance')
+      if (password === null) return
+      if (password !== 'wendy456') {
+        showToast('Wrong password. Opening balance was not inserted.', 'error')
+        return
+      }
+
+      const entryDate = window.prompt('Enter starting date (YYYY-MM-DD)', today())
+      if (entryDate === null) return
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(entryDate)) {
+        showToast('Use date format YYYY-MM-DD.', 'error')
+        return
+      }
+
+      const amountInput = window.prompt('Enter starting opening balance')
+      if (amountInput === null) return
+      const amount = money(amountInput)
+      if (amount <= 0) {
+        showToast('Enter an opening balance greater than zero.', 'error')
+        return
+      }
+
+      try {
+        const entry = {
+          location: 'USAFI',
+          entry_date: entryDate,
+          opening_balance: amount,
+          normal_sales: 0,
+          virtual_sales: 0,
+          normal_payout: 0,
+          virtual_payout: 0,
+          cash_in: 0,
+          cash_out: 0,
+          cash_at_hand: amount,
+          shortage_explanation: 'System starting opening balance',
+          status: 'final',
+        }
+
+        const { data, error } = await supabase
+          .from('daily_balance_entries')
+          .upsert(entry, { onConflict: 'location,entry_date' })
+          .select('*')
+          .single()
+        if (error) throw error
+
+        const { error: expenseError } = await supabase
+          .from('daily_balance_expenses')
+          .delete()
+          .eq('daily_balance_entry_id', data.id)
+        if (expenseError) throw expenseError
+
+        cacheEntry(data, [])
+        showToast('Starting opening balance saved.', 'success')
+        showPage('dashboard', true)
+      } catch (error) {
+        showToast(`Opening balance setup failed: ${error.message}`, 'error')
+      }
+    }
+
+    function unlockManualField(field) {
+      const fieldId = field === 'opening' ? 'opening_balance' : 'cash_at_hand'
+      const unlockKey = field === 'opening' ? 'openingBalance' : 'cashAtHand'
+      const label = field === 'opening' ? 'opening balance' : 'cash at hand'
+      const password = window.prompt(`Enter password to edit ${label}`)
+      if (password === null) return
+      if (password !== 'wendy456') {
+        showToast('Wrong password. Field remains locked.', 'error')
+        return
+      }
+      manualUnlocks[unlockKey] = true
+      $(fieldId).readOnly = false
+      $(fieldId).focus()
+      showToast(`${label} unlocked for manual input.`, 'success')
+    }
+
+    function resetManualLocks() {
+      manualUnlocks.openingBalance = false
+      manualUnlocks.cashAtHand = false
+      if ($('opening_balance')) $('opening_balance').readOnly = true
+      if ($('cash_at_hand')) $('cash_at_hand').readOnly = true
+    }
+
+    function totalsFor(entry, expenses = allExpenses) {
+      const entryExpenses = expenses.filter((expense) => expense.daily_balance_entry_id === entry.id)
+      const approvedExpenses = entryExpenses
+        .filter((expense) => expense.expense_status === 'approved')
+        .reduce((sum, expense) => sum + money(expense.amount), 0)
+      const unapprovedExpenses = entryExpenses
+        .filter((expense) => expense.expense_status === 'unapproved')
+        .reduce((sum, expense) => sum + money(expense.amount), 0)
+      const totalSales = money(entry.normal_sales) + money(entry.virtual_sales)
+      const totalPayout = money(entry.normal_payout) + money(entry.virtual_payout)
+      const expectedClosing = money(entry.opening_balance) + totalSales + money(entry.cash_in) - totalPayout - money(entry.cash_out) - approvedExpenses
+      const variance = expectedClosing - money(entry.cash_at_hand)
+      return { totalSales, totalPayout, approvedExpenses, unapprovedExpenses, expectedClosing, variance }
+    }
+
+    async function fetchExpensesForEntries(entryIds) {
+      const pageSize = 1000
+      const expenses = []
+
+      for (const idGroup of chunks(entryIds, 80)) {
+        let from = 0
+
+        while (true) {
+          const { data, error } = await supabase
+            .from('daily_balance_expenses')
+            .select('*')
+            .in('daily_balance_entry_id', idGroup)
+            .order('created_at', { ascending: true })
+            .range(from, from + pageSize - 1)
+
+          if (error) throw error
+          expenses.push(...(data || []))
+          if (!data || data.length < pageSize) break
+          from += pageSize
+        }
+      }
+
+      return expenses
+    }
+
+    async function fetchEntries() {
+      const { data: entries, error } = await supabase
+        .from('daily_balance_entries')
+        .select('*')
+        .order('entry_date', { ascending: false })
+      if (error) throw error
+
+      const ids = (entries || []).map((entry) => entry.id)
+      const expenses = ids.length ? await fetchExpensesForEntries(ids) : []
+      allEntries = entries || []
+      allExpenses = expenses
+      hasFetchedEntries = true
+      return allEntries
+    }
+
+    async function syncEntriesInBackground() {
+      if (isBackgroundSyncing) return
+      isBackgroundSyncing = true
+      try {
+        await fetchEntries()
+        refreshLocalViews()
+      } catch (error) {
+        console.warn('Background sync failed', error)
+      } finally {
+        isBackgroundSyncing = false
+      }
+    }
+
+    async function loadExpenseCatalog() {
+      const pageSize = 1000
+      const items = []
+      let from = 0
+
+      while (true) {
+        const { data, error } = await supabase
+          .from('daily_balance_expenses')
+          .select('item')
+          .order('item', { ascending: true })
+          .range(from, from + pageSize - 1)
+
+        if (error) throw error
+        items.push(...(data || []).map((row) => row.item).filter(Boolean))
+        if (!data || data.length < pageSize) break
+        from += pageSize
+      }
+
+      expenseCatalog = buildExpenseCatalog(items)
+      refreshExpenseSuggestions()
+      return expenseCatalog
+    }
+
+    function catalogKey(item) {
+      return String(item || '')
+        .toUpperCase()
+        .replace(/['’]S\b/g, '')
+        .replace(/\b(CADRIDGE|CATRIDGE|CATRIGDE|CATRIGDES|CATRIGES|CATRIGGE|CATRIGES)\b/g, 'CARTRIDGE')
+        .replace(/\bREAMS\b/g, 'REAM')
+        .replace(/[^A-Z0-9]+/g, ' ')
+        .replace(/\s+/g, ' ')
+        .trim()
+    }
+
+    function displayCatalogItem(key) {
+      return key
+    }
+
+    function buildExpenseCatalog(items) {
+      const catalog = new Map()
+      items.map((item) => item.trim()).filter(Boolean).forEach((item) => {
+        const key = catalogKey(item)
+        if (!key) return
+        if (!catalog.has(key)) catalog.set(key, displayCatalogItem(key))
+      })
+      return Array.from(catalog.values()).sort((a, b) => a.localeCompare(b))
+    }
+
+    function selectedExpenseItem(row) {
+      return row.querySelector('.expense-item')?.value.trim() || ''
+    }
+
+    function refreshExpenseSuggestions() {
+      const list = $('expense_catalog')
+      if (!list) return
+      list.innerHTML = expenseCatalog
+        .map((item) => `<option value="${escapeHtml(item)}"></option>`)
+        .join('')
+    }
+
+    function refreshExpenseDropdowns() {
+      refreshExpenseSuggestions()
+    }
+
+    async function loadDashboard() {
+      try {
+        await fetchEntries()
+        renderDashboardFromCache()
+      } catch (error) {
+        showToast(error.message, 'error')
+      }
+    }
+
+    function renderDashboardFromCache() {
+        const now = new Date()
+        const monthKey = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`
+        const monthEntries = allEntries.filter((entry) => entry.entry_date?.startsWith(monthKey))
+        const source = monthEntries.length ? monthEntries : allEntries
+        const stats = source.reduce((acc, entry) => {
+          const totals = totalsFor(entry)
+          acc.sales += totals.totalSales
+          acc.normalSales += money(entry.normal_sales)
+          acc.virtualSales += money(entry.virtual_sales)
+          acc.payout += totals.totalPayout
+          acc.normalPayout += money(entry.normal_payout)
+          acc.virtualPayout += money(entry.virtual_payout)
+          acc.approved += totals.approvedExpenses
+          acc.unapproved += totals.unapprovedExpenses
+          acc.variance += totals.variance
+          acc.cashIn += money(entry.cash_in)
+          acc.cashOut += money(entry.cash_out)
+          acc.cashAtHand += money(entry.cash_at_hand)
+          return acc
+        }, { sales: 0, normalSales: 0, virtualSales: 0, payout: 0, normalPayout: 0, virtualPayout: 0, approved: 0, unapproved: 0, variance: 0, cashIn: 0, cashOut: 0, cashAtHand: 0 })
+
+        const firstEntry = source.length ? [...source].sort((a, b) => a.entry_date.localeCompare(b.entry_date))[0] : null
+        const latestEntry = source.length ? [...source].sort((a, b) => b.entry_date.localeCompare(a.entry_date))[0] : null
+        const latestTotals = latestEntry ? totalsFor(latestEntry) : null
+        const openingAction = firstEntry ? '' : '<button type="button" onclick="insertOpeningBalance()">Insert Opening Balance</button>'
+        $('dashboard_stats').innerHTML = [
+          statCard('Sales captured', cash(stats.sales), `${source.length} active days`, 'mint', 'S', salesBreakdown(stats)),
+          statCard('Total payout', cash(stats.payout), 'Normal and virtual', 'blue', 'P', payoutBreakdown(stats)),
+          statCard(firstEntry ? `Opening balance on ${displayDate(firstEntry.entry_date)}` : 'Opening balance', cash(firstEntry?.opening_balance || 0), firstEntry ? firstEntry.entry_date : 'Set the system starting balance', 'gold', 'O', openingAction),
+          statCard('Current closing balance', cash(latestTotals?.expectedClosing || 0), latestEntry ? latestEntry.entry_date : 'No entries yet', 'coral', 'C'),
+        ].join('')
+        $('recent_entries').innerHTML = allEntries.length ? allEntries.slice(0, 6).map(entryRow).join('') : emptyState('No entries saved', 'Import your workbook or create a daily entry.')
+    }
+
+    function statCard(label, value, note, kind, badge, action = '') {
+      return `<article class="stat-card ${kind}">
+        <span>${label}</span>
+        <strong>${value}</strong>
+        <small>${note}</small>
+        ${action ? `<div class="stat-action">${action}</div>` : ''}
+      </article>`
+    }
+
+    function salesBreakdown(stats) {
+      return `<div class="sales-breakdown">
+        <div><span>Normal sales</span><strong>${cash(stats.normalSales)}</strong></div>
+        <div><span>Virtual sales</span><strong>${cash(stats.virtualSales)}</strong></div>
+      </div>`
+    }
+
+    function payoutBreakdown(stats) {
+      return `<div class="sales-breakdown payout-breakdown">
+        <div><span>Normal payout</span><strong>${cash(stats.normalPayout)}</strong></div>
+        <div><span>Virtual payout</span><strong>${cash(stats.virtualPayout)}</strong></div>
+      </div>`
+    }
+
+    function entryRow(entry) {
+      const totals = totalsFor(entry)
+      const balanced = Math.abs(totals.variance) < 1
+      const cashMovement = money(entry.cash_in) > 0
+        ? { label: 'Cash in', value: money(entry.cash_in), className: 'ok-text' }
+        : money(entry.cash_out) > 0
+          ? { label: 'Cash out', value: money(entry.cash_out), className: 'danger-text' }
+          : { label: 'No movement', value: 0, className: '' }
+      return `<tr class="record-summary">
+        <td><strong>${entry.entry_date}</strong><small>${entry.location || 'USAFI'}</small></td>
+        <td>${cash(entry.opening_balance)}</td>
+        <td>${cash(totals.totalSales)}</td>
+        <td>${cash(totals.totalPayout)}</td>
+        <td><span class="${cashMovement.className}">${cash(cashMovement.value)}</span><small>${cashMovement.label}</small></td>
+        <td>${expensePeek(entry, totals)}</td>
+        <td>${cash(totals.expectedClosing)}</td>
+        <td>${cash(entry.cash_at_hand)}</td>
+        <td><span class="pill ${balanced ? 'ok' : 'warn'}">${balanced ? 'Balanced' : cash(totals.variance)}</span></td>
+        <td class="actions">
+          <button type="button" class="micro-button" onclick="viewEntry('${entry.id}')">View</button>
+          <button type="button" class="micro-button" onclick="editEntry('${entry.id}')">Edit</button>
+          <button type="button" class="micro-button delete-button" onclick="deleteEntry('${entry.id}')">Delete</button>
+        </td>
+      </tr>`
+    }
+
+    function expensePeek(entry, totals) {
+      const expenses = allExpenses.filter((expense) => expense.daily_balance_entry_id === entry.id)
+      const approved = expenses.filter((expense) => expense.expense_status === 'approved')
+      const unapproved = expenses.filter((expense) => expense.expense_status === 'unapproved')
+      const detailRows = (items) => items.length
+        ? items.map((expense) => `<div><span>${escapeHtml(expense.item)}</span><strong>${cash(expense.amount)}</strong></div>`).join('')
+        : '<p>No items</p>'
+
+      return `<div class="expense-peek">
+        <span>${cash(totals.approvedExpenses)}</span>
+        <button type="button" class="eye-button" aria-label="View expense details">View</button>
+        <div class="expense-popover">
+          <section>
+            <h4>Approved expenses</h4>
+            ${detailRows(approved)}
+          </section>
+          <section>
+            <h4>Unapproved expenses</h4>
+            ${detailRows(unapproved)}
+          </section>
+        </div>
+      </div>`
+    }
+
+    function emptyState(title, detail) {
+      return `<tr><td colspan="10"><div class="empty"><strong>${title}</strong><span>${detail}</span></div></td></tr>`
+    }
+
+    function setEntryDefaults() {
+      if (!$('entry_date').value) $('entry_date').value = today()
+      if (!$('location').value) $('location').value = 'USAFI'
+      autoFillOpeningBalance()
+      calculatePreview()
+    }
+
+    async function autoFillOpeningBalance() {
+      if (editingId || manualUnlocks.openingBalance || !$('entry_date')?.value) return
+      const location = $('location').value.trim() || 'USAFI'
+      const entryDate = $('entry_date').value
+
+      const { data, error } = await supabase
+        .from('daily_balance_entries')
+        .select('entry_date,cash_at_hand')
+        .eq('location', location)
+        .lt('entry_date', entryDate)
+        .order('entry_date', { ascending: false })
+        .limit(1)
+        .maybeSingle()
+
+      if (error) {
+        showToast(`Opening balance lookup failed: ${error.message}`, 'error')
+        return
+      }
+
+      $('opening_balance').value = inputAmount(data ? data.cash_at_hand : 0)
+      calculatePreview()
+    }
+
+    function clearEntryForm() {
+      resetManualLocks()
+      $('entry_form').reset()
+      $('expenses_container').innerHTML = ''
+      addExpenseRow('approved')
+      editingId = null
+      $('entry_submit_btn').textContent = 'Save daily entry'
+      setEntryDefaults()
+    }
+
+    function expenseRow(status = 'approved', item = '', amount = '') {
+      const row = document.createElement('div')
+      row.className = 'expense-row'
+      row.innerHTML = `
+        <select class="expense-status" aria-label="Expense status">
+          <option value="approved" ${status === 'approved' ? 'selected' : ''}>Approved</option>
+          <option value="unapproved" ${status === 'unapproved' ? 'selected' : ''}>Unapproved</option>
+        </select>
+        <div class="expense-item-field">
+          <input class="expense-item" list="expense_catalog" placeholder="Select or type expense item" value="${escapeHtml(item)}" />
+        </div>
+        <input class="expense-amount amount-input" type="text" inputmode="numeric" placeholder="Amount" value="${amount ? inputAmount(amount) : ''}" />
+        <button class="plain danger-text" type="button" onclick="this.closest('.expense-row').remove(); calculatePreview()">Remove</button>
+      `
+      return row
+    }
+
+    function addExpenseRow(status = 'approved') {
+      $('expenses_container').appendChild(expenseRow(status))
+      calculatePreview()
+    }
+
+    function collectFormExpenses(entryId) {
+      return $$('.expense-row').map((row) => ({
+        daily_balance_entry_id: entryId,
+        expense_status: row.querySelector('.expense-status').value,
+        item: selectedExpenseItem(row),
+        amount: money(row.querySelector('.expense-amount').value),
+      })).filter((expense) => expense.item && expense.amount > 0)
+    }
+
+    function calculatePreview() {
+      const approved = $$('.expense-row')
+        .filter((row) => row.querySelector('.expense-status')?.value === 'approved')
+        .reduce((sum, row) => sum + money(row.querySelector('.expense-amount')?.value), 0)
+      const unapproved = $$('.expense-row')
+        .filter((row) => row.querySelector('.expense-status')?.value === 'unapproved')
+        .reduce((sum, row) => sum + money(row.querySelector('.expense-amount')?.value), 0)
+      const totalSales = fromInput('normal_sales') + fromInput('virtual_sales')
+      const totalPayout = fromInput('normal_payout') + fromInput('virtual_payout')
+      const expected = fromInput('opening_balance') + totalSales + fromInput('cash_in') - totalPayout - fromInput('cash_out') - approved
+      if ($('cash_at_hand') && !manualUnlocks.cashAtHand) $('cash_at_hand').value = inputAmount(expected)
+      const cashAtHand = manualUnlocks.cashAtHand ? fromInput('cash_at_hand') : expected
+      const variance = expected - cashAtHand
+      $('preview').innerHTML = `
+        <dl>
+          <div><dt>Total sales</dt><dd>${cash(totalSales)}</dd></div>
+          <div><dt>Total payout</dt><dd>${cash(totalPayout)}</dd></div>
+          <div><dt>Approved expenses</dt><dd>${cash(approved)}</dd></div>
+          <div><dt>Unapproved expenses</dt><dd>${cash(unapproved)}</dd></div>
+          <div><dt>Cash at hand</dt><dd>${cash(cashAtHand)}</dd></div>
+          ${manualUnlocks.cashAtHand ? `<div class="${Math.abs(variance) < 1 ? 'ok-text' : 'danger-text'}"><dt>Variance</dt><dd>${cash(variance)}</dd></div>` : ''}
+        </dl>
+      `
+    }
+
+    async function saveEntry(event) {
+      event.preventDefault()
+      const entry = {
+        location: $('location').value.trim() || 'USAFI',
+        entry_date: $('entry_date').value,
+        opening_balance: fromInput('opening_balance'),
+        normal_sales: fromInput('normal_sales'),
+        virtual_sales: fromInput('virtual_sales'),
+        normal_payout: fromInput('normal_payout'),
+        virtual_payout: fromInput('virtual_payout'),
+        cash_in: fromInput('cash_in'),
+        cash_out: fromInput('cash_out'),
+        cash_at_hand: fromInput('cash_at_hand'),
+        shortage_explanation: $('shortage_explanation').value.trim(),
+        status: $('status').value,
+      }
+
+      try {
+        const query = editingId
+          ? supabase.from('daily_balance_entries').update(entry).eq('id', editingId).select('*').single()
+          : supabase.from('daily_balance_entries').upsert(entry, { onConflict: 'location,entry_date' }).select('*').single()
+        const { data, error } = await query
+        if (error) throw error
+
+        const { error: deleteError } = await supabase.from('daily_balance_expenses').delete().eq('daily_balance_entry_id', data.id)
+        if (deleteError) throw deleteError
+        const expenses = collectFormExpenses(data.id)
+        let savedExpenses = []
+        if (expenses.length) {
+          const { data: expenseData, error: expenseError } = await supabase.from('daily_balance_expenses').insert(expenses).select('*')
+          if (expenseError) throw expenseError
+          savedExpenses = expenseData || expenses
+        }
+        cacheEntry(data, savedExpenses)
+        showToast(editingId ? 'Entry updated.' : 'Entry saved.', 'success')
+        clearEntryForm()
+        showPage('entries', true)
+      } catch (error) {
+        showToast(error.message, 'error')
+      }
+    }
+
+    async function loadEntries() {
+      try {
+        await fetchEntries()
+        renderEntriesFromCache()
+      } catch (error) {
+        showToast(error.message, 'error')
+      }
+    }
+
+    function renderEntriesFromCache() {
+      renderRecordsMonthPicker()
+      const filteredEntries = recordsMonthFilter
+        ? allEntries.filter((entry) => entry.entry_date?.startsWith(recordsMonthFilter))
+        : allEntries
+      $('entries_body').innerHTML = filteredEntries.length ? groupedEntryRows(filteredEntries) : emptyState('No entries found', 'Choose another month or clear the month filter.')
+    }
+
+    function renderRecordsMonthPicker() {
+      const picker = $('records_month_filter')
+      if (!picker) return
+      const months = Array.from(new Set(allEntries.map((entry) => entry.entry_date?.slice(0, 7)).filter(Boolean)))
+        .sort((a, b) => b.localeCompare(a))
+      const current = recordsMonthFilter
+      picker.innerHTML = `<option value="">All months</option>${months.map((month) => `<option value="${month}" ${month === current ? 'selected' : ''}>${monthName(`${month}-01`)}</option>`).join('')}`
+    }
+
+    function setRecordsMonthFilter(value) {
+      recordsMonthFilter = value
+      renderEntriesFromCache()
+    }
+
+    function groupedEntryRows(entries) {
+      const byMonth = new Map()
+      entries.forEach((entry) => {
+        const key = entry.entry_date?.slice(0, 7) || 'Unknown'
+        if (!byMonth.has(key)) byMonth.set(key, [])
+        byMonth.get(key).push(entry)
+      })
+
+      return Array.from(byMonth.entries())
+        .sort(([a], [b]) => b.localeCompare(a))
+        .map(([month, rows]) => {
+          const total = rows.reduce((sum, entry) => sum + totalsFor(entry).totalSales, 0)
+          return `
+            <tr class="month-divider">
+              <td colspan="10">
+                <div class="month-divider-content">
+                  <strong>${month === 'Unknown' ? 'Unknown month' : monthName(`${month}-01`)}</strong>
+                  <span>${rows.length} ${rows.length === 1 ? 'entry' : 'entries'} / ${cash(total)} sales</span>
+                </div>
+              </td>
+            </tr>
+            <tr class="month-column-header">
+              <th>Date</th>
+              <th>Opening</th>
+              <th>Total sales</th>
+              <th>Total payout</th>
+              <th>Cash in/out</th>
+              <th>Expenses</th>
+              <th>Closing</th>
+              <th>Cash at hand</th>
+              <th>Status</th>
+              <th>Actions</th>
+            </tr>
+            ${rows.map(entryRow).join('')}
+          `
+        }).join('')
+    }
+
+    function refreshLocalViews() {
+      if ($('recent_entries')) renderDashboardFromCache()
+      if ($('entries_body')) renderEntriesFromCache()
+      if ($('reports_grid')) renderReportsFromCache()
+    }
+
+    function cacheEntry(entry, expenses) {
+      allEntries = [
+        entry,
+        ...allEntries.filter((row) => row.id !== entry.id),
+      ].sort((a, b) => b.entry_date.localeCompare(a.entry_date))
+      allExpenses = [
+        ...allExpenses.filter((expense) => expense.daily_balance_entry_id !== entry.id),
+        ...expenses,
+      ]
+      expenseCatalog = buildExpenseCatalog(allExpenses.map((expense) => expense.item).filter(Boolean))
+      refreshExpenseSuggestions()
+      refreshLocalViews()
+    }
+
+    function removeCachedEntry(id) {
+      allEntries = allEntries.filter((entry) => entry.id !== id)
+      allExpenses = allExpenses.filter((expense) => expense.daily_balance_entry_id !== id)
+      expenseCatalog = buildExpenseCatalog(allExpenses.map((expense) => expense.item).filter(Boolean))
+      refreshExpenseSuggestions()
+      refreshLocalViews()
+    }
+
+    async function viewEntry(id) {
+      const entry = allEntries.find((row) => row.id === id) || (await fetchEntries() && allEntries.find((row) => row.id === id))
+      if (!entry) return showToast('Entry not found.', 'error')
+      const expenses = allExpenses.filter((expense) => expense.daily_balance_entry_id === id)
+      const totals = totalsFor(entry)
+      $('entry_detail').innerHTML = `
+        <div class="dialog-body">
+          <form method="dialog" class="dialog-close"><button class="plain" value="cancel">Close</button></form>
+          <header class="modal-title">
+            <span>Entry detail</span>
+            <h3>${entry.location || 'USAFI'} / ${entry.entry_date}</h3>
+            <button type="button" onclick="editEntry('${entry.id}')">Edit entry</button>
+          </header>
+          <div class="detail-strip">
+            ${detail('Opening', cash(entry.opening_balance))}
+            ${detail('Sales', cash(totals.totalSales))}
+            ${detail('Payout', cash(totals.totalPayout))}
+            ${detail('Approved', cash(totals.approvedExpenses))}
+            ${detail('Cash', cash(entry.cash_at_hand))}
+            ${detail('Variance', cash(totals.variance), Math.abs(totals.variance) < 1 ? 'ok-text' : 'danger-text')}
+          </div>
+          ${entry.shortage_explanation ? `<p class="note"><strong>Shortage explanation:</strong> ${escapeHtml(entry.shortage_explanation)}</p>` : ''}
+          <div class="table-wrap">
+            <table>
+              <thead><tr><th>Status</th><th>Item</th><th>Amount</th></tr></thead>
+              <tbody>${expenses.length ? expenses.map((expense) => `<tr><td>${expense.expense_status}</td><td>${escapeHtml(expense.item)}</td><td>${cash(expense.amount)}</td></tr>`).join('') : '<tr><td colspan="3">No expenses captured.</td></tr>'}</tbody>
+            </table>
+          </div>
+        </div>
+      `
+      $('entry_detail').showModal()
+    }
+
+    function detail(label, value, className = '') {
+      return `<div class="detail-item ${className}"><span>${label}</span><strong>${value}</strong></div>`
+    }
+
+    async function editEntry(id) {
+      const entry = allEntries.find((row) => row.id === id) || (await fetchEntries() && allEntries.find((row) => row.id === id))
+      if (!entry) return showToast('Entry not found.', 'error')
+      resetManualLocks()
+      editingId = id
+      $('location').value = entry.location || 'USAFI'
+      $('entry_date').value = entry.entry_date
+      $('opening_balance').value = inputAmount(entry.opening_balance)
+      $('normal_sales').value = inputAmount(entry.normal_sales)
+      $('virtual_sales').value = inputAmount(entry.virtual_sales)
+      $('normal_payout').value = inputAmount(entry.normal_payout)
+      $('virtual_payout').value = inputAmount(entry.virtual_payout)
+      $('cash_in').value = inputAmount(entry.cash_in)
+      $('cash_out').value = inputAmount(entry.cash_out)
+      $('cash_at_hand').value = inputAmount(entry.cash_at_hand)
+      $('status').value = entry.status || 'draft'
+      $('shortage_explanation').value = entry.shortage_explanation || ''
+      $('expenses_container').innerHTML = ''
+      allExpenses.filter((expense) => expense.daily_balance_entry_id === id)
+        .forEach((expense) => $('expenses_container').appendChild(expenseRow(expense.expense_status, expense.item, expense.amount)))
+      if (!$('expenses_container').children.length) addExpenseRow('approved')
+      $('entry_submit_btn').textContent = 'Update daily entry'
+      calculatePreview()
+      if ($('entry_detail').open) $('entry_detail').close()
+      showPage('entry')
+    }
+
+    async function deleteEntry(id) {
+      const password = window.prompt('Enter delete password')
+      if (password === null) return
+      if (password !== 'wendy456') {
+        showToast('Wrong password. Delete cancelled.', 'error')
+        return
+      }
+      if (!window.confirm('Delete this entry and its expenses?')) return
+      const { error } = await supabase.from('daily_balance_entries').delete().eq('id', id)
+      if (error) return showToast(error.message, 'error')
+      removeCachedEntry(id)
+      showToast('Entry deleted.', 'success')
+    }
+
+    async function loadReports() {
+      try {
+        await fetchEntries()
+        renderReportsFromCache()
+      } catch (error) {
+        showToast(error.message, 'error')
+      }
+    }
+
+    function renderReportsFromCache() {
+        const byMonth = new Map()
+        allEntries.forEach((entry) => {
+          const key = entry.entry_date.slice(0, 7)
+          const totals = totalsFor(entry)
+          const row = byMonth.get(key) || { month: key, entries: 0, sales: 0, payout: 0, approved: 0, unapproved: 0, cashIn: 0, cashOut: 0, variance: 0 }
+          row.entries += 1
+          row.sales += totals.totalSales
+          row.payout += totals.totalPayout
+          row.approved += totals.approvedExpenses
+          row.unapproved += totals.unapprovedExpenses
+          row.cashIn += money(entry.cash_in)
+          row.cashOut += money(entry.cash_out)
+          row.variance += totals.variance
+          byMonth.set(key, row)
+        })
+        const rows = Array.from(byMonth.values()).sort((a, b) => b.month.localeCompare(a.month))
+        $('reports_grid').innerHTML = rows.length ? rows.map((row) => `
+          <article class="month-card">
+            <header><span>${monthName(`${row.month}-01`)}</span><strong>${row.entries} days</strong></header>
+            <dl>
+              <div><dt>Sales</dt><dd>${cash(row.sales)}</dd></div>
+              <div><dt>Payout</dt><dd>${cash(row.payout)}</dd></div>
+              <div><dt>Approved</dt><dd>${cash(row.approved)}</dd></div>
+              <div><dt>Unapproved</dt><dd>${cash(row.unapproved)}</dd></div>
+              <div><dt>Cash in</dt><dd>${cash(row.cashIn)}</dd></div>
+              <div><dt>Cash out</dt><dd>${cash(row.cashOut)}</dd></div>
+              <div class="${Math.abs(row.variance) < 1 ? 'ok-text' : 'danger-text'}"><dt>Variance</dt><dd>${cash(row.variance)}</dd></div>
+            </dl>
+          </article>
+        `).join('') : '<div class="empty report-empty"><strong>No reports yet</strong><span>Monthly summaries are generated from saved entries.</span></div>'
+    }
+
+    function parseSheetMonth(sheetName) {
+      const clean = sheetName.toLowerCase().replace(/[^a-z0-9 ]/g, ' ')
+      const year = Number((clean.match(/20\d{2}/) || [])[0])
+      const word = clean.split(/\s+/).find((part) => Object.hasOwn(monthMap, part))
+      if (!word || !year) return null
+      return { month: monthMap[word], year }
+    }
+
+    function entryDateFromOrder(sheetMeta, index) {
+      return new Date(Date.UTC(sheetMeta.year, sheetMeta.month, index + 1)).toISOString().slice(0, 10)
+    }
+
+    function daysInSheetMonth(sheetMeta) {
+      return new Date(Date.UTC(sheetMeta.year, sheetMeta.month + 1, 0)).getUTCDate()
+    }
+
+    function norm(value) {
+      return String(value ?? '').replace(/\s+/g, ' ').trim().toUpperCase()
+    }
+
+    function val(rows, r, c) {
+      return rows[r]?.[c] ?? ''
+    }
+
+    function numberAt(rows, r, c) {
+      const raw = val(rows, r, c)
+      if (raw === '' || raw == null) return 0
+      if (typeof raw === 'number') return raw
+      const parsed = Number(String(raw).replace(/,/g, '').trim())
+      return Number.isFinite(parsed) ? parsed : 0
+    }
+
+    function textAt(rows, r, c) {
+      return String(val(rows, r, c) ?? '').trim()
+    }
+
+    function findAmount(rows, dateRow, col, label) {
+      for (let r = dateRow + 1; r < Math.min(rows.length, dateRow + 22); r += 1) {
+        if (norm(val(rows, r, col)) === label) return numberAt(rows, r, col + 1)
+      }
+      return 0
+    }
+
+    function findExpenseColumns(rows, dateRow, col) {
+      for (let r = dateRow + 1; r < Math.min(rows.length, dateRow + 7); r += 1) {
+        const itemCols = []
+        for (let c = col; c < col + 8; c += 1) {
+          if (norm(val(rows, r, c)) === 'ITEM') itemCols.push(c)
+        }
+
+        if (itemCols.length) {
+          const approvedItemCol = itemCols[0]
+          const unapprovedItemCol = itemCols[1] ?? null
+          const amountFor = (itemCol) => {
+            for (let c = itemCol + 1; c <= itemCol + 3; c += 1) {
+              if (['AMOUNT', 'COST'].includes(norm(val(rows, r, c)))) return c
+            }
+            return itemCol + 1
+          }
+
+          return {
+            headerRow: r,
+            approvedItemCol,
+            approvedAmountCol: amountFor(approvedItemCol),
+            unapprovedItemCol,
+            unapprovedAmountCol: unapprovedItemCol === null ? null : amountFor(unapprovedItemCol),
+          }
+        }
+      }
+
+      return {
+        headerRow: dateRow + 1,
+        approvedItemCol: col + 3,
+        approvedAmountCol: col + 4,
+        unapprovedItemCol: col + 5,
+        unapprovedAmountCol: col + 6,
+      }
+    }
+
+    function isExpenseStopRow(rows, r, cols) {
+      const rowText = cols.map((c) => norm(val(rows, r, c))).join(' ')
+      return rowText.includes('EXPLAIN HOW') || rowText.includes('SHORTAGE EXPLANATIONS')
+    }
+
+    function readExpenses(rows, dateRow, col, entryKey) {
+      const expenses = []
+      const columns = findExpenseColumns(rows, dateRow, col)
+      const watchedCols = [
+        columns.approvedItemCol,
+        columns.approvedAmountCol,
+        columns.unapprovedItemCol,
+        columns.unapprovedAmountCol,
+      ].filter((c) => c !== null)
+
+      for (let r = columns.headerRow + 1; r < Math.min(rows.length, dateRow + 24); r += 1) {
+        const localRowText = Array.from({ length: 9 }, (_, offset) => norm(val(rows, r, col + offset))).join(' ')
+        if (
+          isExpenseStopRow(rows, r, watchedCols) ||
+          localRowText.includes('EXPLAIN HOW') ||
+          localRowText.includes('SHORTAGE EXPLANATIONS') ||
+          norm(val(rows, r, col)) === 'DATE'
+        ) break
+
+        const approvedItem = textAt(rows, r, columns.approvedItemCol)
+        const approvedAmount = numberAt(rows, r, columns.approvedAmountCol)
+        const unapprovedItem = columns.unapprovedItemCol === null ? '' : textAt(rows, r, columns.unapprovedItemCol)
+        const unapprovedAmount = columns.unapprovedAmountCol === null ? 0 : numberAt(rows, r, columns.unapprovedAmountCol)
+
+        if (norm(approvedItem) === 'TOTAL' || norm(unapprovedItem) === 'TOTAL') break
+
+        if (approvedItem && !['ITEM', 'TOTAL'].includes(norm(approvedItem)) && approvedAmount > 0) {
+          expenses.push({ entryKey, expense_status: 'approved', item: approvedItem, amount: approvedAmount })
+        }
+        if (unapprovedItem && !['ITEM', 'TOTAL'].includes(norm(unapprovedItem)) && unapprovedAmount > 0) {
+          expenses.push({ entryKey, expense_status: 'unapproved', item: unapprovedItem, amount: unapprovedAmount })
+        }
+      }
+      return expenses
+    }
+
+    function reconcileExpensesWithSheetTotal(entry) {
+      const approvedTotal = entry.expenses
+        .filter((expense) => expense.expense_status === 'approved')
+        .reduce((sum, expense) => sum + money(expense.amount), 0)
+      const difference = money(entry.sheet_expenses_total) - approvedTotal
+
+      if (money(entry.sheet_expenses_total) > 0 && difference >= 1) {
+        entry.expenses.push({
+          entryKey: entry.entryKey,
+          expense_status: 'approved',
+          item: approvedTotal > 0 ? 'EXPENSES BALANCE ADJUSTMENT' : 'APPROVED EXPENSES TOTAL',
+          amount: difference,
+        })
+      }
+
+      return entry
+    }
+
+    function parseWorkbook(workbook) {
+      const parsed = []
+      workbook.SheetNames.forEach((sheetName) => {
+        const sheetMeta = parseSheetMonth(sheetName)
+        if (!sheetMeta) return
+        const rows = XLSX.utils.sheet_to_json(workbook.Sheets[sheetName], { header: 1, raw: true, defval: '' })
+        const blocks = []
+        rows.forEach((row, r) => {
+          row.forEach((cell, c) => {
+            if (norm(cell) === 'DATE' && norm(val(rows, r, c + 1)).startsWith('AMOUNTS')) blocks.push({ r, c })
+          })
+        })
+        blocks.sort((a, b) => a.r - b.r || a.c - b.c)
+        blocks.slice(0, daysInSheetMonth(sheetMeta)).forEach((block, index) => {
+          const entry = {
+            entryKey: `${sheetName}-${index + 1}`,
+            source_sheet: sheetName,
+            location: 'USAFI',
+            entry_date: entryDateFromOrder(sheetMeta, index),
+            opening_balance: findAmount(rows, block.r, block.c, 'OPENING BALANCE'),
+            normal_sales: findAmount(rows, block.r, block.c, 'NORMAL SALES'),
+            virtual_sales: findAmount(rows, block.r, block.c, 'VIRTUAL SALES'),
+            normal_payout: findAmount(rows, block.r, block.c, 'NORMAL PAYOUT'),
+            virtual_payout: findAmount(rows, block.r, block.c, 'VIRTUAL PAYOUT'),
+            cash_in: findAmount(rows, block.r, block.c, 'CASH IN'),
+            cash_out: findAmount(rows, block.r, block.c, 'CASH OUT'),
+            cash_at_hand: findAmount(rows, block.r, block.c, 'CASH AT HAND'),
+            sheet_expenses_total: findAmount(rows, block.r, block.c, 'EXPENSES'),
+            shortage_explanation: '',
+            status: 'final',
+            expenses: readExpenses(rows, block.r, block.c, `${sheetName}-${index + 1}`),
+          }
+          reconcileExpensesWithSheetTotal(entry)
+
+          const hasData = [
+            entry.opening_balance, entry.normal_sales, entry.virtual_sales,
+            entry.normal_payout, entry.virtual_payout, entry.cash_in,
+            entry.cash_out, entry.cash_at_hand,
+          ].some((amount) => amount > 0) || entry.expenses.length > 0
+          if (hasData) parsed.push(entry)
+        })
+      })
+      return parsed
+    }
+
+    async function handleWorkbook(event) {
+      const file = event.target.files?.[0]
+      if (!file) return
+      const data = await file.arrayBuffer()
+      const workbook = XLSX.read(data, { type: 'array' })
+      importRows = parseWorkbook(workbook)
+      const totalExpenses = importRows.reduce((sum, entry) => sum + entry.expenses.length, 0)
+      $('import_summary').innerHTML = `<strong>${importRows.length}</strong><span>daily entries</span><strong>${totalExpenses}</strong><span>expense rows</span>`
+      $('import_button').disabled = importRows.length === 0
+      $('import_preview').innerHTML = importRows.slice(0, 50).map((entry) => `
+        <tr>
+          <td><strong>${entry.entry_date}</strong><small>${entry.source_sheet}</small></td>
+          <td>${cash(entry.normal_sales + entry.virtual_sales)}</td>
+          <td>${cash(entry.normal_payout + entry.virtual_payout)}</td>
+          <td>${cash(entry.cash_at_hand)}</td>
+          <td>${entry.expenses.length}<small>${cash(entry.expenses.reduce((sum, expense) => sum + money(expense.amount), 0))} / sheet ${cash(entry.sheet_expenses_total)}</small></td>
+        </tr>
+      `).join('')
+      showToast(`Parsed ${importRows.length} workbook entries.`, 'success')
+    }
+
+    function chunks(items, size) {
+      const grouped = []
+      for (let index = 0; index < items.length; index += size) {
+        grouped.push(items.slice(index, index + size))
+      }
+      return grouped
+    }
+
+    function importKey(row) {
+      return `${row.location || 'USAFI'}|${row.entry_date}`
+    }
+
+    async function importWorkbookRows() {
+      if (!importRows.length) return showToast('Choose the workbook first.', 'error')
+      $('import_button').disabled = true
+      $('import_button').textContent = 'Importing'
+      $('import_progress').value = 0
+
+      try {
+        const entryPayloads = importRows.map((row) => ({
+          location: row.location,
+          entry_date: row.entry_date,
+          opening_balance: row.opening_balance,
+          normal_sales: row.normal_sales,
+          virtual_sales: row.virtual_sales,
+          normal_payout: row.normal_payout,
+          virtual_payout: row.virtual_payout,
+          cash_in: row.cash_in,
+          cash_out: row.cash_out,
+          cash_at_hand: row.cash_at_hand,
+          shortage_explanation: row.shortage_explanation,
+          status: row.status,
+        }))
+
+        const upsertedEntries = []
+        for (const group of chunks(entryPayloads, 150)) {
+          const { data, error } = await supabase
+            .from('daily_balance_entries')
+            .upsert(group, { onConflict: 'location,entry_date' })
+            .select('id,location,entry_date')
+          if (error) throw error
+          upsertedEntries.push(...(data || []))
+          $('import_progress').value = Math.min(0.35, upsertedEntries.length / Math.max(importRows.length, 1) * 0.35)
+        }
+
+        const idByKey = new Map(upsertedEntries.map((entry) => [importKey(entry), entry.id]))
+        const entryIds = upsertedEntries.map((entry) => entry.id)
+
+        for (const group of chunks(entryIds, 200)) {
+          const { error } = await supabase
+            .from('daily_balance_expenses')
+            .delete()
+            .in('daily_balance_entry_id', group)
+          if (error) throw error
+        }
+        $('import_progress').value = 0.55
+
+        const expensePayloads = importRows.flatMap((row) => {
+          const entryId = idByKey.get(importKey(row))
+          if (!entryId) return []
+          return row.expenses.map((expense) => ({
+            daily_balance_entry_id: entryId,
+            expense_status: expense.expense_status,
+            item: expense.item,
+            amount: expense.amount,
+          }))
+        })
+
+        let insertedExpenses = 0
+        for (const group of chunks(expensePayloads, 500)) {
+          const { error } = await supabase.from('daily_balance_expenses').insert(group)
+          if (error) throw error
+          insertedExpenses += group.length
+          $('import_progress').value = 0.55 + Math.min(0.4, insertedExpenses / Math.max(expensePayloads.length, 1) * 0.4)
+        }
+
+        $('import_progress').value = 1
+        showToast(`Imported ${upsertedEntries.length} entries and ${expensePayloads.length} expenses.`, 'success')
+        await loadExpenseCatalog()
+        await fetchEntries()
+        showPage('dashboard', true)
+      } catch (error) {
+        showToast(`Import failed: ${error.message}`, 'error')
+      } finally {
+        $('import_button').disabled = false
+        $('import_button').textContent = 'Import to Supabase'
+      }
+    }
+
+    function exportEntries() {
+      if (!allEntries.length) return showToast('No entries to export.', 'error')
+      const data = allEntries.map((entry) => {
+        const totals = totalsFor(entry)
+        return {
+          Date: entry.entry_date,
+          Location: entry.location,
+          Opening: entry.opening_balance,
+          Sales: totals.totalSales,
+          Payout: totals.totalPayout,
+          ApprovedExpenses: totals.approvedExpenses,
+          UnapprovedExpenses: totals.unapprovedExpenses,
+          CashAtHand: entry.cash_at_hand,
+          Variance: totals.variance,
+          Status: entry.status,
+        }
+      })
+      const wb = XLSX.utils.book_new()
+      XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(data), 'USAFI Entries')
+      XLSX.writeFile(wb, `USAFI_entries_${today()}.xlsx`)
+    }
+
+    function exportPdf() {
+      html2pdf().set({
+        margin: 8,
+        filename: `USAFI_report_${today()}.pdf`,
+        html2canvas: { scale: 2 },
+        jsPDF: { unit: 'mm', format: 'a4', orientation: 'landscape' },
+      }).from($('reports_export')).save()
+    }
+
+    function escapeHtml(value) {
+      return String(value ?? '').replace(/[&<>"']/g, (char) => ({
+        '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#039;',
+      }[char]))
+    }
+
+    window.showPage = showPage
+    window.openImportDesk = openImportDesk
+    window.insertOpeningBalance = insertOpeningBalance
+    window.unlockManualField = unlockManualField
+    window.setRecordsMonthFilter = setRecordsMonthFilter
+    window.addExpenseRow = addExpenseRow
+    window.calculatePreview = calculatePreview
+    window.clearEntryForm = clearEntryForm
+    window.viewEntry = viewEntry
+    window.editEntry = editEntry
+    window.deleteEntry = deleteEntry
+    window.importWorkbookRows = importWorkbookRows
+    window.exportEntries = exportEntries
+    window.exportPdf = exportPdf
+
+    window.addEventListener('DOMContentLoaded', async () => {
+      $('entry_form').addEventListener('submit', saveEntry)
+      $('workbook_file').addEventListener('change', handleWorkbook)
+      $('entry_date').addEventListener('change', autoFillOpeningBalance)
+      $('location').addEventListener('change', autoFillOpeningBalance)
+      document.body.addEventListener('input', (event) => {
+        if (event.target.matches('.amount-input')) formatAmountInput(event.target)
+        if (event.target.closest('#entry_form')) calculatePreview()
+      })
+      $('app_shell').hidden = false
+      $('workspace').hidden = false
+      try {
+        await loadExpenseCatalog()
+      } catch (error) {
+        showToast(`Expense list failed to load: ${error.message}`, 'error')
+      }
+      addExpenseRow('approved')
+      showPage('dashboard')
+    })
+  </script>
+  <style>
+    :root {
+      --ink: #202124;
+      --muted: #6d747f;
+      --canvas: #f4f6f7;
+      --line: #dce3e8;
+      --panel: #ffffff;
+      --mint: #0f8f7a;
+      --mint-soft: #e6f5f1;
+      --blue: #3366cc;
+      --blue-soft: #e9f0ff;
+      --gold: #b7791f;
+      --gold-soft: #fff4db;
+      --coral: #d94f3d;
+      --coral-soft: #fff0ed;
+      --shadow: 0 14px 34px rgba(32, 33, 36, 0.08);
+      font-family: "Aptos", "Segoe UI", system-ui, sans-serif;
+    }
+
+    * { box-sizing: border-box; }
+    body { margin: 0; min-width: 320px; background: var(--canvas); color: var(--ink); }
+    button, input, select, textarea { font: inherit; }
+
+    button {
+      min-height: 40px;
+      border: 0;
+      border-radius: 6px;
+      padding: 0 14px;
+      background: var(--ink);
+      color: #fff;
+      font-weight: 800;
+      cursor: pointer;
+    }
+
+    button:hover { filter: brightness(0.95); }
+    button:disabled { opacity: 0.55; cursor: not-allowed; }
+    .plain { background: transparent; color: var(--ink); border: 1px solid var(--line); }
+    .danger-text { color: var(--coral); }
+    .ok-text { color: var(--mint); }
+
+    input, select, textarea {
+      width: 100%;
+      min-height: 42px;
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      background: #fff;
+      color: var(--ink);
+      padding: 9px 11px;
+    }
+
+    input:focus, select:focus, textarea:focus {
+      outline: 3px solid rgba(15, 143, 122, 0.16);
+      border-color: var(--mint);
+    }
+
+    input[readonly] {
+      background: #eef2f4;
+      color: var(--muted);
+      cursor: not-allowed;
+    }
+
+    textarea { min-height: 96px; resize: vertical; }
+    label { display: grid; gap: 7px; font-size: 12px; font-weight: 900; color: var(--muted); text-transform: uppercase; letter-spacing: 0; }
+
+    .masthead {
+      position: sticky;
+      top: 0;
+      z-index: 20;
+      display: grid;
+      grid-template-columns: auto 1fr auto;
+      align-items: center;
+      gap: 18px;
+      min-height: 74px;
+      padding: 12px clamp(14px, 3vw, 30px);
+      background: rgba(244, 246, 247, 0.94);
+      border-bottom: 1px solid var(--line);
+      backdrop-filter: blur(16px);
+    }
+
+    .identity { display: flex; align-items: center; gap: 12px; min-width: 0; }
+    .mark { display: grid; place-items: center; width: 44px; height: 44px; background: var(--mint); color: white; border-radius: 50%; font-weight: 950; }
+    .identity h1 { margin: 0; font-size: clamp(18px, 2vw, 24px); line-height: 1; letter-spacing: 0; }
+    .identity p { margin: 4px 0 0; color: var(--muted); font-size: 12px; font-weight: 750; }
+
+    .nav-strip {
+      display: flex;
+      justify-content: center;
+      gap: 6px;
+      overflow-x: auto;
+      scrollbar-width: none;
+    }
+
+    .nav-button {
+      flex: 0 0 auto;
+      background: transparent;
+      color: var(--muted);
+      border: 1px solid transparent;
+      min-height: 38px;
+    }
+
+    .nav-button.active {
+      background: #fff;
+      color: var(--ink);
+      border-color: var(--line);
+      box-shadow: 0 6px 18px rgba(32,33,36,0.06);
+    }
+
+    .user-tools { display: flex; align-items: center; justify-content: flex-end; gap: 10px; min-width: 0; }
+    .chip, .pill {
+      display: inline-flex;
+      align-items: center;
+      min-height: 29px;
+      border-radius: 999px;
+      padding: 4px 10px;
+      background: #fff;
+      border: 1px solid var(--line);
+      color: var(--muted);
+      font-size: 12px;
+      font-weight: 900;
+      white-space: nowrap;
+    }
+    .pill.ok { color: var(--mint); background: var(--mint-soft); border-color: transparent; }
+    .pill.warn { color: var(--coral); background: var(--coral-soft); border-color: transparent; }
+
+    .page { display: none; }
+    .page.active { display: block; }
+
+    .section-kicker { color: var(--mint); font-size: 12px; font-weight: 950; text-transform: uppercase; letter-spacing: 0; }
+    .form-stack { display: grid; gap: 14px; }
+
+    .workspace { padding: clamp(14px, 3vw, 30px); }
+    .page-header { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 20px; align-items: end; margin-bottom: 22px; }
+    .page-header h2 { margin: 5px 0 0; font-size: clamp(29px, 4vw, 52px); line-height: 0.98; letter-spacing: 0; }
+    .page-header p { margin: 10px 0 0; max-width: 780px; color: var(--muted); line-height: 1.55; }
+
+    .stat-grid {
+      display: grid;
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+      border: 1px solid var(--line);
+      background: #fff;
+      border-radius: 6px;
+      overflow: hidden;
+      margin-bottom: 22px;
+    }
+
+    .stat-card {
+      min-height: 118px;
+      display: grid;
+      align-content: space-between;
+      gap: 16px;
+      padding: 18px;
+      border-right: 1px solid var(--line);
+    }
+
+    .stat-card:last-child { border-right: 0; }
+    .stat-card span, .stat-card small { color: var(--muted); font-weight: 850; line-height: 1.35; }
+    .stat-card strong { font-size: clamp(22px, 2.5vw, 32px); line-height: 1; overflow-wrap: anywhere; }
+    .stat-card.mint { box-shadow: inset 0 5px 0 var(--mint); }
+    .stat-card.blue { box-shadow: inset 0 5px 0 var(--blue); }
+    .stat-card.gold { box-shadow: inset 0 5px 0 var(--gold); }
+    .stat-card.coral { box-shadow: inset 0 5px 0 var(--coral); }
+
+    .dashboard-split {
+      display: grid;
+      grid-template-columns: minmax(0, 1.55fr) minmax(300px, 0.8fr);
+      gap: 18px;
+      align-items: start;
+    }
+
+    .tool-surface {
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      box-shadow: 0 8px 24px rgba(32,33,36,0.04);
+    }
+
+    .surface-head {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 12px;
+      padding: 16px 16px 0;
+    }
+
+    .surface-head h3 { margin: 0; font-size: 18px; }
+    .table-wrap { width: 100%; overflow-x: auto; -webkit-overflow-scrolling: touch; }
+    table { width: 100%; min-width: 1160px; border-collapse: collapse; }
+    th, td { padding: 13px 14px; border-bottom: 1px solid var(--line); text-align: left; vertical-align: middle; font-size: 14px; }
+    th { color: var(--muted); font-size: 11px; text-transform: uppercase; letter-spacing: 0; background: #f9fbfc; }
+    td small { display: block; color: var(--muted); margin-top: 3px; font-weight: 750; }
+    .actions { display: flex; gap: 8px; flex-wrap: wrap; }
+    .micro-button { min-height: 32px; padding: 0 10px; background: #eef2f4; color: var(--ink); }
+
+    .record-summary td {
+      white-space: nowrap;
+    }
+
+    .month-divider td {
+      padding: 0;
+      background: var(--brand-red);
+      border-top: 1px solid var(--brand-red-dark);
+      border-bottom: 1px solid var(--brand-red-dark);
+      text-align: center;
+    }
+
+    .month-column-header th {
+      background: #fff8e6;
+      color: #6a4c12;
+      font-size: 11px;
+      font-weight: 950;
+      text-transform: uppercase;
+    }
+
+    .month-divider-content {
+      display: flex;
+      justify-content: center;
+      align-items: center;
+      gap: 18px;
+      min-height: 48px;
+      padding: 10px 18px;
+      background: var(--brand-red);
+      color: #fff;
+    }
+
+    .month-divider strong {
+      display: inline-block;
+      margin: 0;
+      font-size: 16px;
+      color: #fff;
+    }
+
+    .month-divider span {
+      color: rgba(255,255,255,0.82);
+      font-weight: 900;
+    }
+
+    .expense-peek {
+      position: relative;
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    .eye-button {
+      min-height: 28px;
+      width: 34px;
+      padding: 0;
+      border-radius: 999px;
+      background: #eef2f4;
+      color: transparent;
+      position: relative;
+    }
+
+    .eye-button::before {
+      content: "";
+      position: absolute;
+      inset: 8px 7px;
+      border: 2px solid var(--ink);
+      border-radius: 50% / 62%;
+    }
+
+    .eye-button::after {
+      content: "";
+      position: absolute;
+      width: 6px;
+      height: 6px;
+      left: 14px;
+      top: 11px;
+      background: var(--ink);
+      border-radius: 50%;
+    }
+
+    .expense-popover {
+      position: absolute;
+      right: 0;
+      top: calc(100% + 8px);
+      z-index: 30;
+      display: none;
+      width: min(420px, 86vw);
+      max-height: 360px;
+      overflow: auto;
+      padding: 12px;
+      background: #fff;
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      box-shadow: var(--shadow);
+    }
+
+    .expense-peek:hover .expense-popover,
+    .expense-peek:focus-within .expense-popover {
+      display: grid;
+      gap: 12px;
+    }
+
+    .expense-popover h4 {
+      margin: 0 0 8px;
+      font-size: 13px;
+      text-transform: uppercase;
+    }
+
+    .expense-popover div {
+      display: flex;
+      justify-content: space-between;
+      gap: 16px;
+      padding: 6px 0;
+      border-bottom: 1px solid var(--line);
+    }
+
+    .expense-popover span {
+      white-space: normal;
+      font-weight: 750;
+    }
+
+    .expense-popover strong {
+      font-variant-numeric: tabular-nums;
+    }
+
+    .expense-popover p {
+      margin: 0;
+      color: var(--muted);
+    }
+
+    .entry-grid { display: grid; grid-template-columns: minmax(0, 1fr) 360px; gap: 18px; align-items: start; }
+    .entry-main, .entry-side, .import-zone { padding: 18px; }
+    .field-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 14px; }
+    .section-title { margin: 24px 0 12px; font-size: 16px; }
+    .expense-row { display: grid; grid-template-columns: 150px minmax(0, 1fr) 150px 90px; gap: 10px; margin-bottom: 10px; align-items: center; }
+    .expense-item-field { display: grid; gap: 8px; }
+    .button-row { display: flex; gap: 10px; flex-wrap: wrap; margin-top: 14px; }
+
+    #preview dl, .month-card dl { display: grid; gap: 0; margin: 0; }
+    #preview dl div, .month-card dl div {
+      display: flex;
+      justify-content: space-between;
+      gap: 14px;
+      padding: 12px 0;
+      border-bottom: 1px solid var(--line);
+    }
+    dt { color: var(--muted); font-size: 13px; font-weight: 850; }
+    dd { margin: 0; text-align: right; font-weight: 950; }
+
+    .import-zone {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) auto;
+      gap: 16px;
+      align-items: center;
+      border: 1px dashed #9fb3be;
+      background: #fbfcfd;
+    }
+    .import-summary { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; padding: 14px 0; color: var(--muted); font-weight: 900; }
+    .import-summary strong { color: var(--ink); font-size: 28px; }
+    progress { width: 100%; height: 12px; accent-color: var(--mint); }
+
+    .reports-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(270px, 1fr)); gap: 14px; }
+    .month-card { background: #fff; border: 1px solid var(--line); border-radius: 6px; padding: 16px; }
+    .month-card header { display: flex; justify-content: space-between; gap: 12px; margin-bottom: 12px; }
+    .month-card header span { font-weight: 950; }
+    .month-card header strong { color: var(--muted); font-size: 13px; }
+
+    .empty { display: grid; place-items: center; gap: 6px; min-height: 116px; color: var(--muted); text-align: center; }
+    .empty strong { color: var(--ink); font-size: 17px; }
+    .report-empty { grid-column: 1 / -1; }
+
+    dialog { width: min(980px, calc(100vw - 24px)); border: 1px solid var(--line); border-radius: 6px; padding: 0; box-shadow: var(--shadow); }
+    dialog::backdrop { background: rgba(32,33,36,0.48); }
+    .dialog-body { padding: 20px; max-height: 84vh; overflow: auto; background: #fff; }
+    .dialog-close { display: flex; justify-content: flex-end; margin: 0 0 12px; }
+    .modal-title { display: grid; gap: 7px; margin-bottom: 16px; }
+    .modal-title span { color: var(--muted); font-size: 12px; font-weight: 950; text-transform: uppercase; }
+    .modal-title h3 { margin: 0; font-size: 28px; }
+    .detail-strip { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); border: 1px solid var(--line); border-radius: 6px; overflow: hidden; margin-bottom: 16px; }
+    .detail-item { padding: 12px; border-right: 1px solid var(--line); background: #fbfcfd; }
+    .detail-item span { display: block; color: var(--muted); font-size: 12px; font-weight: 900; margin-bottom: 6px; }
+    .detail-item strong { overflow-wrap: anywhere; }
+    .note { padding: 12px; background: var(--gold-soft); border-left: 4px solid var(--gold); border-radius: 6px; }
+
+    .toasts { position: fixed; top: 88px; right: 16px; z-index: 40; display: grid; gap: 10px; width: min(390px, calc(100vw - 32px)); }
+    .toast { padding: 13px 15px; border-radius: 6px; background: #fff; border: 1px solid var(--line); box-shadow: var(--shadow); font-weight: 850; }
+    .toast.success { color: var(--mint); border-color: #b8ddd5; }
+    .toast.error { color: var(--coral); border-color: #f3bbb2; }
+
+    /* Modern visual system */
+    :root {
+      --ink: #121826;
+      --muted: #697386;
+      --canvas: #eef3f7;
+      --line: #dbe5ec;
+      --panel: rgba(255, 255, 255, 0.94);
+      --mint: #008f7a;
+      --mint-soft: #e4f7f2;
+      --blue: #2563eb;
+      --blue-soft: #eaf1ff;
+      --gold: #d18a00;
+      --gold-soft: #fff4d6;
+      --coral: #e14d3d;
+      --coral-soft: #fff0ed;
+      --violet: #6d5dfc;
+      --shadow: 0 22px 55px rgba(18, 24, 38, 0.12);
+    }
+
+    body {
+      min-height: 100vh;
+      background:
+        radial-gradient(circle at 18% 8%, rgba(0, 143, 122, 0.16), transparent 30%),
+        radial-gradient(circle at 92% 0%, rgba(37, 99, 235, 0.14), transparent 28%),
+        linear-gradient(180deg, #f7fbfd 0%, var(--canvas) 48%, #f5f8fa 100%);
+      color: var(--ink);
+    }
+
+    button {
+      border-radius: 10px;
+      min-height: 44px;
+      padding: 0 16px;
+      background: linear-gradient(135deg, #121826, #263246);
+      box-shadow: 0 10px 24px rgba(18, 24, 38, 0.13);
+      transition: transform 160ms ease, box-shadow 160ms ease, filter 160ms ease;
+    }
+
+    button:hover {
+      transform: translateY(-1px);
+      box-shadow: 0 14px 28px rgba(18, 24, 38, 0.16);
+    }
+
+    .plain {
+      background: rgba(255, 255, 255, 0.72);
+      color: var(--ink);
+      border: 1px solid var(--line);
+      box-shadow: none;
+    }
+
+    input, select, textarea {
+      border-radius: 11px;
+      border-color: #d7e2ea;
+      background: rgba(255, 255, 255, 0.92);
+      box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.85);
+    }
+
+    input:focus, select:focus, textarea:focus {
+      outline: 4px solid rgba(0, 143, 122, 0.14);
+      border-color: var(--mint);
+    }
+
+    .masthead {
+      margin: 14px clamp(12px, 2.5vw, 28px) 0;
+      border: 1px solid rgba(219, 229, 236, 0.9);
+      border-radius: 18px;
+      background: rgba(255, 255, 255, 0.82);
+      box-shadow: 0 14px 34px rgba(18, 24, 38, 0.08);
+    }
+
+    .mark {
+      border-radius: 14px;
+      background: linear-gradient(135deg, var(--mint), #1b6eea);
+      box-shadow: 0 14px 26px rgba(0, 143, 122, 0.24);
+    }
+
+    .identity h1 {
+      font-size: clamp(19px, 2vw, 26px);
+      letter-spacing: 0;
+    }
+
+    .nav-strip {
+      justify-content: center;
+      padding: 4px;
+      border: 1px solid rgba(219, 229, 236, 0.86);
+      border-radius: 14px;
+      background: rgba(238, 243, 247, 0.7);
+    }
+
+    .nav-button {
+      border-radius: 10px;
+      min-height: 38px;
+      padding: 0 13px;
+      box-shadow: none;
+    }
+
+    .nav-button.active {
+      background: #fff;
+      color: var(--ink);
+      box-shadow: 0 9px 20px rgba(18, 24, 38, 0.08);
+    }
+
+    .workspace {
+      max-width: 1680px;
+      margin: 0 auto;
+      padding: clamp(18px, 3vw, 34px);
+    }
+
+    .page-header {
+      min-height: 180px;
+      align-items: center;
+      padding: clamp(22px, 4vw, 42px);
+      border: 1px solid rgba(219, 229, 236, 0.82);
+      border-radius: 24px;
+      background:
+        linear-gradient(135deg, rgba(18, 24, 38, 0.92), rgba(29, 59, 88, 0.88)),
+        linear-gradient(90deg, rgba(0, 143, 122, 0.42), rgba(37, 99, 235, 0.35));
+      color: #fff;
+      box-shadow: var(--shadow);
+      overflow: hidden;
+    }
+
+    .page-header .section-kicker,
+    .page-header p {
+      color: rgba(255, 255, 255, 0.76);
+    }
+
+    .page-header h2 {
+      max-width: 850px;
+      font-size: clamp(34px, 5vw, 68px);
+    }
+
+    .page-header button {
+      background: #fff;
+      color: var(--ink);
+      box-shadow: 0 18px 34px rgba(0, 0, 0, 0.2);
+    }
+
+    .stat-grid {
+      grid-template-columns: repeat(4, minmax(190px, 1fr));
+      gap: 10px;
+      border: 0;
+      background: transparent;
+      border-radius: 0;
+      overflow: visible;
+      margin: 10px 0 14px;
+    }
+
+    .stat-card {
+      position: relative;
+      min-height: 108px;
+      padding: 13px 15px;
+      border: 1px solid rgba(219, 229, 236, 0.9);
+      border-radius: 18px;
+      background: var(--panel);
+      box-shadow: 0 16px 34px rgba(18, 24, 38, 0.08);
+      overflow: hidden;
+    }
+
+    .stat-card::after {
+      content: "";
+      position: absolute;
+      inset: auto 16px 0 16px;
+      height: 4px;
+      border-radius: 999px 999px 0 0;
+      background: var(--mint);
+    }
+
+    .stat-card.blue::after { background: var(--blue); }
+    .stat-card.gold::after { background: var(--gold); }
+    .stat-card.coral::after { background: var(--coral); }
+    .stat-card.mint,
+    .stat-card.blue,
+    .stat-card.gold,
+    .stat-card.coral { box-shadow: 0 16px 34px rgba(18, 24, 38, 0.08); }
+
+    .stat-card strong {
+      font-size: clamp(21px, 2.15vw, 29px);
+      letter-spacing: 0;
+    }
+
+    .stat-action {
+      margin-top: 2px;
+    }
+
+    .stat-action button {
+      width: 100%;
+      min-height: 34px;
+      padding: 0 10px;
+      border-radius: 9px;
+      font-size: 12px;
+      box-shadow: none;
+    }
+
+    .sales-breakdown {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 6px;
+    }
+
+    .sales-breakdown div {
+      padding: 6px;
+      border-radius: 8px;
+      background: rgba(0, 143, 122, 0.08);
+    }
+
+    .payout-breakdown div {
+      background: rgba(31, 79, 186, 0.08);
+    }
+
+    .sales-breakdown span {
+      display: block;
+      margin-bottom: 3px;
+      color: var(--muted);
+      font-size: 10px;
+      font-weight: 950;
+    }
+
+    .sales-breakdown strong {
+      display: block;
+      font-size: 12px;
+      line-height: 1.15;
+      overflow-wrap: anywhere;
+    }
+
+    .tool-surface {
+      border: 1px solid rgba(219, 229, 236, 0.92);
+      border-radius: 18px;
+      background: var(--panel);
+      box-shadow: 0 16px 34px rgba(18, 24, 38, 0.07);
+      overflow: visible;
+    }
+
+    .surface-head {
+      padding: 18px 18px 0;
+      align-items: flex-start;
+    }
+
+    .surface-head h3 {
+      margin-top: 2px;
+      font-size: 19px;
+    }
+
+    .records-panel {
+      overflow: hidden;
+    }
+
+    .table-wrap {
+      border-radius: 0 0 18px 18px;
+    }
+
+    table {
+      min-width: 1180px;
+    }
+
+    th {
+      background: #f6fafc;
+      color: #596678;
+      font-weight: 950;
+    }
+
+    td {
+      background: rgba(255,255,255,0.72);
+    }
+
+    tr:hover td {
+      background: #fbfdfe;
+    }
+
+    .micro-button {
+      border-radius: 9px;
+      background: #edf3f7;
+      color: var(--ink);
+      box-shadow: none;
+    }
+
+    .delete-button {
+      color: #fff;
+      background: var(--brand-red);
+    }
+
+    .entry-grid {
+      grid-template-columns: minmax(0, 1fr) minmax(320px, 400px);
+    }
+
+    .entry-main, .entry-side, .import-zone {
+      padding: clamp(16px, 2.4vw, 24px);
+    }
+
+    .field-grid {
+      grid-template-columns: repeat(auto-fit, minmax(210px, 1fr));
+    }
+
+    .expense-row {
+      grid-template-columns: 150px minmax(220px, 1fr) 150px auto;
+      padding: 10px;
+      border: 1px solid rgba(219, 229, 236, 0.84);
+      border-radius: 15px;
+      background: rgba(248, 251, 253, 0.72);
+    }
+
+    .input-action {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) auto;
+      gap: 8px;
+      align-items: center;
+    }
+
+    .unlock-button {
+      min-height: 42px;
+      padding: 0 12px;
+      border-radius: 10px;
+      white-space: nowrap;
+      box-shadow: none;
+    }
+
+    .records-tools {
+      display: flex;
+      align-items: end;
+      justify-content: flex-end;
+      gap: 12px;
+      min-width: min(420px, 100%);
+    }
+
+    .records-tools label {
+      width: min(220px, 100%);
+      color: rgba(255,255,255,0.82);
+    }
+
+    .records-tools select {
+      min-height: 44px;
+      border-color: rgba(255,255,255,0.34);
+    }
+
+    #preview {
+      padding: 2px 0;
+    }
+
+    #preview dl div, .month-card dl div {
+      padding: 13px 0;
+    }
+
+    .month-card {
+      border-radius: 18px;
+      box-shadow: 0 14px 28px rgba(18,24,38,0.07);
+    }
+
+    .import-zone {
+      border-radius: 18px;
+      background: linear-gradient(135deg, rgba(255,255,255,0.96), rgba(238,243,247,0.9));
+    }
+
+    progress {
+      height: 14px;
+      border-radius: 999px;
+      overflow: hidden;
+    }
+
+    dialog {
+      border-radius: 20px;
+    }
+
+    .dialog-body {
+      border-radius: inherit;
+    }
+
+    @media (max-width: 1080px) {
+      .masthead { grid-template-columns: 1fr auto; }
+      .nav-strip { grid-column: 1 / -1; justify-content: flex-start; order: 3; }
+      .stat-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+      .stat-card:nth-child(2) { border-right: 0; }
+      .dashboard-split, .entry-grid { grid-template-columns: 1fr; }
+      .field-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    }
+
+    @media (max-width: 760px) {
+      .workspace { padding: 14px; }
+      .page-header { grid-template-columns: 1fr; align-items: start; }
+      .stat-grid { grid-template-columns: 1fr; }
+      .stat-card { min-height: 104px; border-right: 0; border-bottom: 1px solid var(--line); }
+      .field-grid, .expense-row, .import-zone { grid-template-columns: 1fr; }
+      table { min-width: 1120px; }
+      .masthead { display: flex; flex-direction: column; align-items: stretch; }
+      .identity { align-items: flex-start; }
+      .page-header { min-height: auto; padding: 24px; border-radius: 18px; }
+      .page-header h2 { font-size: clamp(32px, 12vw, 48px); }
+    }
+
+    /* Capitalbet executive skin */
+    :root {
+      --brand-red: #bd1627;
+      --brand-red-dark: #820f1e;
+      --brand-gold: #ffb51b;
+      --brand-gold-soft: #fff3cf;
+      --ink: #151923;
+      --muted: #68717f;
+      --canvas: #f5f6f3;
+      --line: #e1e3de;
+      --panel: rgba(255,255,255,0.96);
+      --mint: #007f6d;
+      --blue: #2457c5;
+      --gold: #e19a05;
+      --coral: #c91f32;
+      --shadow: 0 24px 60px rgba(72, 25, 30, 0.14);
+    }
+
+    body {
+      background:
+        linear-gradient(180deg, rgba(189, 22, 39, 0.10) 0, transparent 310px),
+        linear-gradient(135deg, #fffdfa 0%, #f4f6f3 44%, #eef3f5 100%);
+    }
+
+    .masthead {
+      min-height: 86px;
+      border-color: rgba(255,255,255,0.72);
+      background:
+        linear-gradient(135deg, rgba(130, 15, 30, 0.98), rgba(189, 22, 39, 0.95)),
+        var(--brand-red);
+      color: #fff;
+      box-shadow: 0 20px 46px rgba(130, 15, 30, 0.24);
+    }
+
+    .identity {
+      gap: 16px;
+    }
+
+    .logo-lockup {
+      display: grid;
+      place-items: center;
+      width: clamp(154px, 18vw, 230px);
+      height: 58px;
+      padding: 8px 12px;
+      border-radius: 15px;
+      background: rgba(255, 255, 255, 0.13);
+      border: 1px solid rgba(255,255,255,0.18);
+      box-shadow: inset 0 1px 0 rgba(255,255,255,0.18);
+    }
+
+    .brand-logo {
+      display: block;
+      width: 100%;
+      max-height: 42px;
+      object-fit: contain;
+      filter: drop-shadow(0 7px 13px rgba(0,0,0,0.22));
+    }
+
+    .identity h1,
+    .identity p,
+    .chip {
+      color: #fff;
+    }
+
+    .identity p {
+      color: rgba(255,255,255,0.74);
+    }
+
+    .chip {
+      background: rgba(255,255,255,0.13);
+      border-color: rgba(255,255,255,0.2);
+    }
+
+    .import-lock-button {
+      min-height: 42px;
+      border-radius: 999px;
+      padding: 0 18px;
+      color: var(--brand-red-dark);
+      background: linear-gradient(135deg, #fff, #ffe9ad);
+      box-shadow: 0 12px 25px rgba(0,0,0,0.18);
+      white-space: nowrap;
+    }
+
+    .nav-strip {
+      background: rgba(255,255,255,0.11);
+      border-color: rgba(255,255,255,0.17);
+    }
+
+    .nav-button {
+      color: rgba(255,255,255,0.78);
+    }
+
+    .nav-button.active {
+      background: #fff;
+      color: var(--brand-red-dark);
+      box-shadow: 0 12px 26px rgba(0,0,0,0.18);
+    }
+
+    .page-header {
+      position: relative;
+      min-height: 210px;
+      border: 0;
+      background:
+        linear-gradient(135deg, rgba(32, 18, 22, 0.94), rgba(130, 15, 30, 0.90) 55%, rgba(189, 22, 39, 0.92)),
+        var(--brand-red);
+    }
+
+    .page-header::before {
+      content: "";
+      position: absolute;
+      inset: 0;
+      background:
+        linear-gradient(90deg, rgba(255,181,27,0.25), transparent 36%),
+        repeating-linear-gradient(135deg, rgba(255,255,255,0.055) 0 1px, transparent 1px 18px);
+      pointer-events: none;
+    }
+
+    .page-header::after {
+      content: "";
+      position: absolute;
+      right: clamp(20px, 5vw, 70px);
+      top: 50%;
+      width: min(390px, 34vw);
+      aspect-ratio: 5 / 1.4;
+      transform: translateY(-50%);
+      background: url("assets/capitalbet-logo.png") center / contain no-repeat;
+      opacity: 0.13;
+      filter: drop-shadow(0 20px 28px rgba(0,0,0,0.2));
+      pointer-events: none;
+    }
+
+    .page-header > * {
+      position: relative;
+      z-index: 1;
+    }
+
+    .page-header .section-kicker {
+      color: var(--brand-gold);
+    }
+
+    .page-header button {
+      color: #1b1b1b;
+      background: linear-gradient(135deg, #fff, #ffe7a4);
+    }
+
+    .compact-page-header {
+      min-height: 118px;
+      padding: clamp(16px, 2.5vw, 26px) clamp(20px, 3.5vw, 38px);
+      margin-bottom: 16px;
+    }
+
+    .compact-page-header h2 {
+      font-size: clamp(32px, 4vw, 52px);
+    }
+
+    .compact-page-header p {
+      margin-top: 8px;
+      max-width: 650px;
+    }
+
+    .dashboard-action-row {
+      display: flex;
+      align-items: center;
+      justify-content: flex-end;
+      padding: 0;
+      margin: 0 0 16px;
+    }
+
+    .dashboard-action-row button {
+      color: #1b1b1b;
+      background: linear-gradient(135deg, #fff, #ffe7a4);
+      box-shadow: 0 14px 28px rgba(130, 15, 30, 0.13);
+    }
+
+    button {
+      background: linear-gradient(135deg, var(--brand-red), var(--brand-red-dark));
+      box-shadow: 0 14px 28px rgba(189, 22, 39, 0.22);
+    }
+
+    .plain {
+      background: #fff;
+      color: var(--brand-red-dark);
+      border-color: #edd7d7;
+    }
+
+    .section-kicker {
+      color: var(--brand-red);
+    }
+
+    .stat-card {
+      border: 1px solid rgba(225, 227, 222, 0.94);
+      background:
+        linear-gradient(180deg, rgba(255,255,255,0.98), rgba(255,255,255,0.90)),
+        #fff;
+    }
+
+    .stat-card::after {
+      height: 5px;
+      background: var(--brand-red);
+    }
+
+    .stat-card.gold::after {
+      background: var(--brand-gold);
+    }
+
+    .stat-card.coral::after {
+      background: var(--brand-red);
+    }
+
+    .stat-card.mint::after {
+      background: #09816f;
+    }
+
+    .stat-card.blue::after {
+      background: #1f4fba;
+    }
+
+    .tool-surface {
+      border-color: rgba(225, 227, 222, 0.96);
+      background: rgba(255,255,255,0.94);
+    }
+
+    th {
+      background: #fff8e6;
+      color: #6a4c12;
+    }
+
+    tr:hover td {
+      background: #fffdf7;
+    }
+
+    .pill.ok {
+      color: #006d5d;
+      background: #e3f5ef;
+    }
+
+    .pill.warn {
+      color: var(--brand-red);
+      background: #ffecef;
+    }
+
+    .micro-button {
+      color: var(--brand-red-dark);
+      background: #fff4d7;
+    }
+
+    .expense-row {
+      background: #fffaf0;
+    }
+
+    input[readonly] {
+      background: #f2eee5;
+    }
+
+    progress {
+      accent-color: var(--brand-red);
+    }
+
+    @media (max-width: 1080px) {
+      .logo-lockup { width: 190px; }
+      .page-header::after { opacity: 0.08; width: 44vw; }
+    }
+
+    @media (max-width: 760px) {
+      .logo-lockup {
+        width: min(230px, 100%);
+        height: 54px;
+      }
+
+      .identity {
+        flex-direction: column;
+        gap: 10px;
+      }
+
+      .page-header::after {
+        display: none;
+      }
+
+      html,
+      body {
+        width: 100%;
+        max-width: 100%;
+        overflow-x: hidden;
+      }
+
+      .masthead {
+        width: auto;
+        margin: 8px;
+        padding: 12px;
+        border-radius: 18px;
+        gap: 12px;
+      }
+
+      .dashboard-action-row {
+        justify-content: stretch;
+      }
+
+      .dashboard-action-row button {
+        width: 100%;
+      }
+
+      .identity {
+        width: 100%;
+        align-items: center;
+        text-align: center;
+      }
+
+      .identity h1 {
+        font-size: 20px;
+      }
+
+      .identity p {
+        font-size: 11px;
+        line-height: 1.35;
+      }
+
+      .nav-strip {
+        width: 100%;
+        max-width: 100%;
+        min-width: 0;
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 6px;
+        padding: 6px;
+        overflow: hidden;
+      }
+
+      .nav-button {
+        width: 100%;
+        max-width: 100%;
+        min-width: 0;
+        min-height: 42px;
+        padding: 0 8px;
+        font-size: 12px;
+        line-height: 1.15;
+        white-space: normal;
+        overflow-wrap: anywhere;
+        text-align: center;
+      }
+
+      .nav-button[data-page="reports"] {
+        font-size: 0;
+      }
+
+      .nav-button[data-page="reports"]::before {
+        content: "Reports";
+        font-size: 12px;
+        line-height: 1.15;
+      }
+
+      .user-tools,
+      .import-lock-button {
+        width: 100%;
+      }
+
+      .workspace {
+        padding: 10px;
+      }
+
+      .stat-grid {
+        gap: 10px;
+      }
+
+      .tool-surface {
+        border-radius: 16px;
+      }
+
+      .surface-head {
+        display: grid;
+        grid-template-columns: 1fr;
+        align-items: flex-start;
+        padding: 14px 14px 0;
+      }
+
+      .surface-head button {
+        width: 100%;
+      }
+
+      .surface-head h3 {
+        font-size: 20px;
+      }
+
+      .records-table {
+        min-width: 0;
+        border-collapse: separate;
+        border-spacing: 0 10px;
+      }
+
+      .records-table thead {
+        display: none;
+      }
+
+      .records-table .month-column-header {
+        display: none;
+      }
+
+      .records-table tbody,
+      .records-table tr,
+      .records-table td {
+        display: block;
+        width: 100%;
+      }
+
+      .records-table .record-summary {
+        padding: 12px;
+        border: 1px solid var(--line);
+        border-radius: 14px;
+        background: #fff;
+        box-shadow: 0 10px 22px rgba(72, 25, 30, 0.08);
+      }
+
+      .records-table .record-summary td {
+        display: flex;
+        justify-content: space-between;
+        gap: 14px;
+        padding: 8px 0;
+        border-bottom: 1px solid #f0e7df;
+        white-space: normal;
+        text-align: right;
+      }
+
+      .records-table .record-summary td:last-child {
+        border-bottom: 0;
+      }
+
+      .records-table .record-summary td::before {
+        content: "";
+        flex: 0 0 110px;
+        color: var(--muted);
+        font-size: 11px;
+        font-weight: 950;
+        text-align: left;
+        text-transform: uppercase;
+      }
+
+      .records-table .record-summary td:nth-child(1)::before { content: "Date"; }
+      .records-table .record-summary td:nth-child(2)::before { content: "Opening"; }
+      .records-table .record-summary td:nth-child(3)::before { content: "Sales"; }
+      .records-table .record-summary td:nth-child(4)::before { content: "Payout"; }
+      .records-table .record-summary td:nth-child(5)::before { content: "Cash"; }
+      .records-table .record-summary td:nth-child(6)::before { content: "Expenses"; }
+      .records-table .record-summary td:nth-child(7)::before { content: "Closing"; }
+      .records-table .record-summary td:nth-child(8)::before { content: "At hand"; }
+      .records-table .record-summary td:nth-child(9)::before { content: "Status"; }
+      .records-table .record-summary td:nth-child(10)::before { content: "Actions"; }
+
+      .records-table .actions {
+        justify-content: flex-end;
+      }
+
+      .records-table .actions::before {
+        align-self: center;
+      }
+
+      .micro-button {
+        min-height: 36px;
+      }
+
+      .month-divider td {
+        display: block;
+        padding: 0;
+        border-radius: 12px;
+        overflow: hidden;
+      }
+
+      .month-divider-content {
+        display: grid;
+        gap: 3px;
+        min-height: 54px;
+      }
+
+      .expense-popover {
+        left: auto;
+        right: 0;
+        width: min(330px, 86vw);
+      }
+
+      .records-tools {
+        width: 100%;
+        display: grid;
+        grid-template-columns: 1fr;
+      }
+
+      .records-tools label,
+      .records-tools button {
+        width: 100%;
+      }
+
+    }
+  </style>
+</head>
+<body>
+  <header class="masthead">
+    <div class="identity">
+      <div class="logo-lockup"><img class="brand-logo" src="assets/capitalbet-logo.png" alt="Capitalbet" /></div>
+      <div>
+        <h1>USAFI Operations Desk</h1>
+        <p>Capitalbet balancing, imports, and daily cash control</p>
+      </div>
+    </div>
+    <nav class="nav-strip" id="app_shell" hidden>
+      <button class="nav-button active" data-page="dashboard" onclick="showPage('dashboard')">Dashboard</button>
+      <button class="nav-button" data-page="entry" onclick="showPage('entry')">New Entry</button>
+      <button class="nav-button" data-page="entries" onclick="showPage('entries')">All Records</button>
+      <button class="nav-button" data-page="reports" onclick="showPage('reports')">Monthly Reports</button>
+    </nav>
+    <div class="user-tools">
+      <button class="import-lock-button" type="button" onclick="openImportDesk()">Import</button>
+    </div>
+  </header>
+
+  <div id="toasts" class="toasts"></div>
+  <datalist id="expense_catalog"></datalist>
+
+  <main id="workspace" class="workspace">
+    <section id="page_dashboard" class="page active">
+      <div class="dashboard-action-row">
+        <button type="button" onclick="showPage('entry')">Add New Entry</button>
+      </div>
+      <div id="dashboard_stats" class="stat-grid"></div>
+      <section class="tool-surface records-panel">
+        <div class="surface-head">
+          <div>
+            <span class="section-kicker">Recent</span>
+            <h3>Latest records</h3>
+          </div>
+          <button class="plain" type="button" onclick="showPage('entries')">Open all</button>
+        </div>
+        <div class="table-wrap">
+          <table class="records-table">
+            <thead><tr><th>Date</th><th>Opening</th><th>Total sales</th><th>Total payout</th><th>Cash in/out</th><th>Expenses</th><th>Closing</th><th>Cash at hand</th><th>Status</th><th>Actions</th></tr></thead>
+            <tbody id="recent_entries"></tbody>
+          </table>
+        </div>
+      </section>
+    </section>
+
+    <section id="page_entry" class="page">
+      <div class="page-header compact-page-header">
+        <div>
+          <span class="section-kicker">Daily entry</span>
+          <h2>Input today&apos;s Figures</h2>
+          <p>Enter the sales, payout, cash movement, and expenses for the day.</p>
+        </div>
+      </div>
+      <form id="entry_form" class="entry-grid">
+        <section class="tool-surface entry-main">
+          <div class="field-grid">
+            <label>Location <input id="location" value="USAFI" required /></label>
+            <label>Date <input id="entry_date" type="date" required /></label>
+            <label>Status
+              <select id="status">
+                <option value="draft">Draft</option>
+                <option value="final">Final</option>
+                <option value="reviewed">Reviewed</option>
+              </select>
+            </label>
+            <label>Opening balance
+              <div class="input-action">
+                <input id="opening_balance" class="amount-input" type="text" inputmode="numeric" readonly required />
+                <button class="plain unlock-button" type="button" onclick="unlockManualField('opening')">Unlock</button>
+              </div>
+            </label>
+            <label>Normal sales <input id="normal_sales" class="amount-input" type="text" inputmode="numeric" /></label>
+            <label>Virtual sales <input id="virtual_sales" class="amount-input" type="text" inputmode="numeric" /></label>
+            <label>Normal payout <input id="normal_payout" class="amount-input" type="text" inputmode="numeric" /></label>
+            <label>Virtual payout <input id="virtual_payout" class="amount-input" type="text" inputmode="numeric" /></label>
+            <label>Cash in <input id="cash_in" class="amount-input" type="text" inputmode="numeric" /></label>
+            <label>Cash out <input id="cash_out" class="amount-input" type="text" inputmode="numeric" /></label>
+            <label>Cash at hand
+              <div class="input-action">
+                <input id="cash_at_hand" class="amount-input" type="text" inputmode="numeric" readonly required />
+                <button class="plain unlock-button" type="button" onclick="unlockManualField('cash')">Unlock</button>
+              </div>
+            </label>
+          </div>
+          <h3 class="section-title">Expenses</h3>
+          <div id="expenses_container"></div>
+          <div class="button-row">
+            <button class="plain" type="button" onclick="addExpenseRow('approved')">Add approved</button>
+            <button class="plain" type="button" onclick="addExpenseRow('unapproved')">Add unapproved</button>
+          </div>
+          <h3 class="section-title">Shortage explanation</h3>
+          <textarea id="shortage_explanation" placeholder="Explain shortage or overage when needed"></textarea>
+          <div class="button-row">
+            <button id="entry_submit_btn" type="submit">Save daily entry</button>
+            <button class="plain" type="button" onclick="clearEntryForm()">Clear</button>
+          </div>
+        </section>
+        <aside class="tool-surface entry-side">
+          <div class="surface-head" style="padding:0 0 14px;">
+            <h3>Live balance</h3>
+          </div>
+          <div id="preview"></div>
+        </aside>
+      </form>
+    </section>
+
+    <section id="page_import" class="page">
+      <div class="page-header">
+        <div>
+          <span class="section-kicker">Import</span>
+          <h2>Load workbook history</h2>
+          <p>Select <strong>USAFI BALANCING SHEETS.xlsx</strong>. The importer reads month tabs, extracts daily blocks, and upserts records by location and date.</p>
+        </div>
+      </div>
+      <section class="tool-surface import-zone">
+        <label>Workbook file <input id="workbook_file" type="file" accept=".xlsx,.xls" /></label>
+        <button id="import_button" type="button" onclick="importWorkbookRows()" disabled>Import to Supabase</button>
+      </section>
+      <div id="import_summary" class="import-summary">No workbook selected yet.</div>
+      <progress id="import_progress" value="0" max="1"></progress>
+      <section class="tool-surface" style="margin-top:16px;">
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>Date</th><th>Sales</th><th>Payout</th><th>Cash at hand</th><th>Expenses parsed</th></tr></thead>
+            <tbody id="import_preview"></tbody>
+          </table>
+        </div>
+      </section>
+    </section>
+
+    <section id="page_entries" class="page">
+      <div class="page-header">
+        <div>
+          <span class="section-kicker">Records</span>
+          <h2>Saved balances</h2>
+          <p>Every row is stored in Supabase and can be exported back to Excel.</p>
+        </div>
+        <div class="records-tools">
+          <label>Month
+            <select id="records_month_filter" onchange="setRecordsMonthFilter(this.value)">
+              <option value="">All months</option>
+            </select>
+          </label>
+          <button type="button" onclick="exportEntries()">Export Excel</button>
+        </div>
+      </div>
+      <section class="tool-surface">
+        <div class="table-wrap">
+          <table class="records-table">
+            <tbody id="entries_body"></tbody>
+          </table>
+        </div>
+      </section>
+    </section>
+
+    <section id="page_reports" class="page">
+      <div class="page-header">
+        <div>
+          <span class="section-kicker">Reports</span>
+          <h2>Monthly totals</h2>
+          <p>Report cards summarize sales, payout, expenses, cash movement, and variance.</p>
+        </div>
+        <button type="button" onclick="exportPdf()">Export PDF</button>
+      </div>
+      <div id="reports_export">
+        <div id="reports_grid" class="reports-grid"></div>
+      </div>
+    </section>
+  </main>
+
+  <dialog id="entry_detail"></dialog>
+</body>
+</html>

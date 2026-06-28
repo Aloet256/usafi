@@ -1,0 +1,8 @@
+﻿# local/browser temp files
+.chrome-mobile-profile*/
+mobile-preview*.png
+
+# OS/editor noise
+.DS_Store
+Thumbs.db
+.vscode/
