@@ -308,7 +308,6 @@
     function startAutoRefresh() {
       if (autoRefreshTimer) return
       autoRefreshTimer = window.setInterval(() => {
-        if (document.hidden) return
         syncEntriesInBackground()
       }, 1000)
     }
@@ -675,6 +674,8 @@
           allExpenses = allExpenses.filter((expense) => expense.daily_balance_entry_id !== optimisticId)
         }
         cacheEntry(data, savedExpenses)
+        await fetchEntries()
+        refreshLocalViews()
         showToast(wasEditing ? 'Entry updated.' : 'Entry saved.', 'success')
         window.alert('All Data successfully submitted')
       } catch (error) {
