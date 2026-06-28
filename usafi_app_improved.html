@@ -44,6 +44,8 @@
     let hasFetchedEntries = false
     let isBackgroundSyncing = false
     let recordsMonthFilter = ''
+    let currentPage = 'dashboard'
+    const appPages = new Set(['dashboard', 'entry', 'import', 'entries', 'reports'])
     const manualUnlocks = {
       openingBalance: false,
       cashAtHand: false,
@@ -57,10 +59,30 @@
       window.setTimeout(() => toast.remove(), 5200)
     }
 
-    function showPage(page, useCache = false) {
+    function pageUrl(page) {
+      return page === 'dashboard'
+        ? `${window.location.pathname}${window.location.search}`
+        : `#${page}`
+    }
+
+    function rememberPage(page, replace = false) {
+      const method = replace ? 'replaceState' : 'pushState'
+      window.history[method]({ page }, '', pageUrl(page))
+    }
+
+    function pageFromHash() {
+      const page = window.location.hash.replace('#', '')
+      return appPages.has(page) && page !== 'import' ? page : 'dashboard'
+    }
+
+    function showPage(page, useCache = false, fromHistory = false) {
+      if (!appPages.has(page)) page = 'dashboard'
+      if (!fromHistory && page !== currentPage) rememberPage(page)
+      currentPage = page
       $$('.page').forEach((section) => section.classList.remove('active'))
       $(`page_${page}`).classList.add('active')
       $$('.nav-button').forEach((button) => button.classList.toggle('active', button.dataset.page === page))
+      window.scrollTo({ top: 0, behavior: fromHistory ? 'auto' : 'smooth' })
       if (page === 'dashboard') (useCache || hasFetchedEntries) ? (renderDashboardFromCache(), syncEntriesInBackground()) : loadDashboard()
       if (page === 'entries') (useCache || hasFetchedEntries) ? (renderEntriesFromCache(), syncEntriesInBackground()) : loadEntries()
       if (page === 'reports') (useCache || hasFetchedEntries) ? (renderReportsFromCache(), syncEntriesInBackground()) : loadReports()
@@ -1172,7 +1194,14 @@
     window.exportEntries = exportEntries
     window.exportPdf = exportPdf
 
+    window.addEventListener('popstate', (event) => {
+      showPage(event.state?.page || 'dashboard', true, true)
+    })
+
     window.addEventListener('DOMContentLoaded', async () => {
+      const initialPage = pageFromHash()
+      currentPage = 'dashboard'
+      rememberPage('dashboard', true)
       $('entry_form').addEventListener('submit', saveEntry)
       $('workbook_file').addEventListener('change', handleWorkbook)
       $('entry_date').addEventListener('change', autoFillOpeningBalance)
@@ -1185,7 +1214,12 @@
       $('workspace').hidden = false
       hydrateLocalCache()
       addExpenseRow('approved')
-      showPage('dashboard', hasFetchedEntries)
+      if (initialPage === 'dashboard') {
+        showPage('dashboard', hasFetchedEntries, true)
+      } else {
+        showPage(initialPage, hasFetchedEntries, true)
+        rememberPage(initialPage)
+      }
       loadExpenseCatalog().catch((error) => showToast(`Expense list failed to load: ${error.message}`, 'error'))
     })
   </script>
