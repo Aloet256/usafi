@@ -43,9 +43,8 @@
     let importRows = []
     let hasFetchedEntries = false
     let isBackgroundSyncing = false
-    let realtimeRefreshTimer = null
     let activeSaveCount = 0
-    let ledgerRealtimeChannel = null
+    let autoRefreshTimer = null
     let recordsMonthFilter = ''
     let currentPage = 'dashboard'
     const appPages = new Set(['dashboard', 'entry', 'import', 'entries', 'reports'])
@@ -294,7 +293,7 @@
     }
 
     async function syncEntriesInBackground() {
-      if (isBackgroundSyncing) return
+      if (isBackgroundSyncing || activeSaveCount > 0) return
       isBackgroundSyncing = true
       try {
         await fetchEntries()
@@ -306,31 +305,12 @@
       }
     }
 
-    function scheduleRealtimeRefresh() {
-      window.clearTimeout(realtimeRefreshTimer)
-      realtimeRefreshTimer = window.setTimeout(async () => {
-        if (activeSaveCount > 0) {
-          scheduleRealtimeRefresh()
-          return
-        }
-        try {
-          await fetchEntries()
-          refreshLocalViews()
-        } catch (error) {
-          console.warn('Realtime refresh failed', error)
-        }
-      }, 700)
-    }
-
-    function startRealtimeSync() {
-      if (ledgerRealtimeChannel) return
-      ledgerRealtimeChannel = supabase
-        .channel('usafi-ledger-live')
-        .on('postgres_changes', { event: '*', schema: 'public', table: 'daily_balance_entries' }, scheduleRealtimeRefresh)
-        .on('postgres_changes', { event: '*', schema: 'public', table: 'daily_balance_expenses' }, scheduleRealtimeRefresh)
-        .subscribe((status) => {
-          if (status === 'CHANNEL_ERROR') console.warn('Realtime channel failed to connect')
-        })
+    function startAutoRefresh() {
+      if (autoRefreshTimer) return
+      autoRefreshTimer = window.setInterval(() => {
+        if (document.hidden) return
+        syncEntriesInBackground()
+      }, 1000)
     }
 
     async function loadExpenseCatalog() {
@@ -1334,7 +1314,7 @@
       $('app_shell').hidden = false
       $('workspace').hidden = false
       hydrateLocalCache()
-      startRealtimeSync()
+      startAutoRefresh()
       addExpenseRow('approved')
       if (initialPage === 'dashboard') {
         showPage('dashboard', hasFetchedEntries, true)
