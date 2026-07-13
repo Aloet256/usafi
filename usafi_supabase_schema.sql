@@ -74,6 +74,9 @@ ALTER TABLE public.daily_balance_entries
   FOREIGN KEY (entered_by) REFERENCES auth.users(id) ON DELETE SET NULL;
 
 ALTER TABLE public.daily_balance_entries
+  DROP CONSTRAINT IF EXISTS daily_balance_entries_opening_balance_check;
+
+ALTER TABLE public.daily_balance_entries
   DROP CONSTRAINT IF EXISTS daily_balance_entries_cash_at_hand_check;
 
 DROP TRIGGER IF EXISTS set_staff_updated_at ON public.staff;

@@ -100,4 +100,14 @@ Reporting views:
 
 The views are calculated from live entry and expense data, so reports stay accurate without a separate refresh job.
 
+Negative carried balances are allowed for Opening Balance and Cash at Hand. If an older database rejects a negative previous-day closing balance, run the latest `usafi_supabase_schema.sql` or run:
+
+```sql
+ALTER TABLE public.daily_balance_entries
+  DROP CONSTRAINT IF EXISTS daily_balance_entries_opening_balance_check;
+
+ALTER TABLE public.daily_balance_entries
+  DROP CONSTRAINT IF EXISTS daily_balance_entries_cash_at_hand_check;
+```
+
 No-login mode makes the app faster to use, but anyone with the project URL and anon key can read and change entry data unless you add another access control layer later.

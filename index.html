@@ -69,6 +69,9 @@
 
     function readableSaveError(error) {
       const message = error?.message || String(error || '')
+      if (message.includes('daily_balance_entries_opening_balance_check')) {
+        return 'The database has an old Opening Balance rule blocking negative carried balances. Run the latest Supabase schema once, then save again.'
+      }
       if (message.includes('daily_balance_entries_cash_at_hand_check')) {
         return 'The database has an old Cash at Hand rule blocking this entry. Run the latest Supabase schema once, then save again.'
       }
@@ -120,8 +123,11 @@
     }
 
     function formatAmountInput(input) {
-      const raw = String(input.value || '').replace(/[^\d]/g, '')
-      input.value = raw ? Number(raw).toLocaleString('en-UG', { maximumFractionDigits: 0 }) : ''
+      const value = String(input.value || '')
+      const allowNegative = input.id === 'opening_balance' || input.id === 'cash_at_hand'
+      const isNegative = allowNegative && value.trim().startsWith('-')
+      const raw = value.replace(/[^\d]/g, '')
+      input.value = raw ? `${isNegative ? '-' : ''}${Number(raw).toLocaleString('en-UG', { maximumFractionDigits: 0 })}` : (isNegative ? '-' : '')
     }
 
     function openImportDesk() {
@@ -156,9 +162,10 @@
 
       const amountInput = window.prompt('Enter starting opening balance')
       if (amountInput === null) return
-      const amount = money(amountInput)
-      if (amount <= 0) {
-        showToast('Enter an opening balance greater than zero.', 'error')
+      const normalizedAmountInput = String(amountInput).replace(/,/g, '').trim()
+      const amount = Number(normalizedAmountInput)
+      if (!normalizedAmountInput || !Number.isFinite(amount)) {
+        showToast('Enter a valid opening balance.', 'error')
         return
       }
 
